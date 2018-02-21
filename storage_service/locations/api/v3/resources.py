@@ -58,8 +58,6 @@ UNAUTHORIZED_MSG = {
 }
 
 
-
-
 class ReadonlyResources(object):
     """Super-class of ABC ``Resources`` and all read-only OLD resource views.
     RESTful CRUD(S) interface based on the Atom protocol:

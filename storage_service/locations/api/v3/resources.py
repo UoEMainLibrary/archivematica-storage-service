@@ -1,13 +1,17 @@
 """Version 3 of the Storage Service API.
 
-The Storage Service exposes the following resources via an HTTP JSON interface:
+The Storage Service API V3 exposes the following resources via an HTTP JSON
+interface:
 
-- /fsobjects/ --- directories and files on disk, read-only, no database models
 - /locations/ --- purpose-specific paths within a /spaces/ resource
 - /packages/ --- Information Package (SIP, DIP or AIP)
 - /spaces/ --- storage space with behaviour specific to backing system
 - /pipelines/ --- an Archivematica instance that is the source of a package
+
+The following resources may also be exposed in the future:
+
 - /file/ --- a file on disk (which is in a package), represented as db row.
+- /fsobjects/ --- directories and files on disk, read-only, no database models
 
 All resources have endpoints that follow this pattern::
 
@@ -27,6 +31,7 @@ All resources have endpoints that follow this pattern::
 """
 
 import abc
+from collections import namedtuple
 import json
 import logging
 
@@ -35,11 +40,11 @@ from django.conf.urls import url
 from django.forms.models import model_to_dict
 from django.http import JsonResponse
 from formencode.schema import Schema
-from formencode.validators import Int
+from formencode.validators import Int, Invalid
 import inflect
 
 import locations.models as models
-from locations.api.v3.querybuilder import QueryBuilder
+from locations.api.v3.querybuilder import QueryBuilder, SearchParseError
 import locations.api.v3.schemata as schemata
 
 LOGGER = logging.getLogger(__name__)
@@ -58,9 +63,20 @@ UNAUTHORIZED_MSG = {
 }
 
 
+# ResCol is a resource collection object factory. Each instance holds the
+# relevant model name and instance getter for a given resource collection name.
+ResCol = namedtuple('ResCol', ['model_name', 'getter'])
+
+
+def get_mini_dicts_getter(model_name):
+    def func():
+        model_cls = getattr(models, model_name)
+        return [mi.get_mini_dict() for mi in model_cls.objects.all()]
+    return func
+
+
 class ReadonlyResources(object):
-    """Super-class of ABC ``Resources`` and all read-only OLD resource views.
-    RESTful CRUD(S) interface based on the Atom protocol:
+    """Super-class of ABC ``Resources`` and all read-only resource views.
 
     +-----------------+-------------+--------------------------+--------+
     | Purpose         | HTTP Method | Path                     | Method |
@@ -226,7 +242,7 @@ class ReadonlyResources(object):
         try:
             query_set = self.query_builder.get_query_set(
                 python_search_params.get('query'))
-        except (OLDSearchParseError, Invalid) as error:
+        except (SearchParseError, Invalid) as error:
             errors = error.unpack_errors()
             LOGGER.warning(
                 'Attempt to search over all %s resulted in an error(s): %s',
@@ -420,22 +436,19 @@ class Resources(ReadonlyResources):
         try:
             values = json.loads(self.request.body.decode('utf8'))
         except ValueError:
-            self.request.response.status_int = 400
             LOGGER.warning('Request body was not valid JSON')
-            return JSONDecodeErrorResponse
+            return JSONDecodeErrorResponse, 400
         state = self._get_create_state(values)
         try:
             data = schema.to_python(values, state)
         except Invalid as error:
-            self.request.response.status_int = 400
             errors = error.unpack_errors()
             LOGGER.warning(
                 'Attempt to create a(n) %s resulted in an error(s): %s',
                 self.hmn_member_name, errors)
-            return {'errors': errors}
+            return {'errors': errors}, 400
         resource = self._create_new_resource(data)
-        self.request.dbsession.add(resource)
-        self.request.dbsession.flush()
+        resource.save()
         self._post_create(resource)
         LOGGER.info('Created a new %s.', self.hmn_member_name)
         return self._get_create_dict(resource)
@@ -443,10 +456,10 @@ class Resources(ReadonlyResources):
     def new(self):
         """Return the data necessary to create a new resource.
 
-        - URL: ``GET /<resource_collection_name>/new``.
+        - URL: ``GET /<resource_collection_name>/new/``.
 
         :returns: a dict containing the related resources necessary to create a
-         new resource of this type.
+                  new resource of this type.
 
         .. note:: See :func:`_get_new_edit_data` to understand how the query
            string parameters can affect the contents of the lists in the
@@ -469,39 +482,34 @@ class Resources(ReadonlyResources):
         resource_model = self._model_from_pk(pk)
         LOGGER.info('Attempting to update %s %s.', self.hmn_member_name, pk)
         if not resource_model:
-            self.request.response.status_int = 404
             msg = self._rsrc_not_exist(pk)
             LOGGER.warning(msg)
-            return {'error': msg}
+            return {'error': msg}, 404
         if self._update_unauth(resource_model) is not False:
-            self.request.response.status_int = 403
             msg = self._update_unauth_msg_obj()
             LOGGER.warning(msg)
-            return msg
+            return msg, 403
         schema = self.schema_cls()
         try:
             values = json.loads(self.request.body.decode('utf8'))
         except ValueError:
-            self.request.response.status_int = 400
             LOGGER.warning(JSONDecodeErrorResponse)
-            return JSONDecodeErrorResponse
+            return JSONDecodeErrorResponse, 400
         state = self._get_update_state(values, pk, resource_model)
         try:
             data = schema.to_python(values, state)
         except Invalid as error:
-            self.request.response.status_int = 400
             errors = error.unpack_errors()
             LOGGER.warning(errors)
-            return {'errors': errors}
+            return {'errors': errors}, 400
         resource_dict = resource_model.get_dict()
         resource_model = self._update_resource_model(resource_model, data)
         # resource_model will be False if there are no changes
         if not resource_model:
-            self.request.response.status_int = 400
             msg = ('The update request failed because the submitted data were'
                    ' not new.')
             LOGGER.warning(msg)
-            return {'error': msg}
+            return {'error': msg}, 400
         self._backup_resource(resource_dict)
         self.request.dbsession.add(resource_model)
         self.request.dbsession.flush()
@@ -526,14 +534,12 @@ class Resources(ReadonlyResources):
         LOGGER.info('Attempting to return the data needed to update %s %s.',
                     self.hmn_member_name, pk)
         if not resource_model:
-            self.request.response.status_int = 404
             msg = self._rsrc_not_exist(pk)
             LOGGER.warning(msg)
-            return {'error': msg}
+            return {'error': msg}, 404
         if self._model_access_unauth(resource_model) is not False:
-            self.request.response.status_int = 403
             LOGGER.warning('User not authorized to access edit action on model')
-            return UNAUTHORIZED_MSG
+            return UNAUTHORIZED_MSG, 403
         LOGGER.info('Returned the data needed to update %s %s.',
                     self.hmn_member_name, pk)
         return {
@@ -550,21 +556,17 @@ class Resources(ReadonlyResources):
         resource_model = self._model_from_pk(pk)
         LOGGER.info('Attempting to delete %s %s.', self.hmn_member_name, pk)
         if not resource_model:
-            self.request.response.status_int = 404
             msg = self._rsrc_not_exist(pk)
             LOGGER.warning(msg)
-            return {'error': msg}
+            return {'error': msg}, 404
         if self._delete_unauth(resource_model) is not False:
-            self.request.response.status_int = 403
             msg = self._delete_unauth_msg_obj()
             LOGGER.warning(msg)
-            return msg
+            return msg, 403
         error_msg = self._delete_impossible(resource_model)
         if error_msg:
-            self.request.response.status_int = 403
             LOGGER.warning(error_msg)
-            return {'error': error_msg}
-        # Not all Pylons controllers were doing this:
+            return {'error': error_msg}, 403
         resource_model.modifier = self.logged_in_user
         resource_dict = self._get_delete_dict(resource_model)
         self._backup_resource(resource_dict)
@@ -609,17 +611,15 @@ class Resources(ReadonlyResources):
             prev_vers_restricted = (
                 previous_versions and not unrestricted_previous_versions)
             if resource_restricted or prev_vers_restricted :
-                self.request.response.status_int = 403
                 LOGGER.warning(UNAUTHORIZED_MSG)
-                return UNAUTHORIZED_MSG
+                return UNAUTHORIZED_MSG, 403
             LOGGER.info('Returned history of %s %s.', self.hmn_member_name, pk)
             return {self.member_name: resource_model,
                     'previous_versions': unrestricted_previous_versions}
-        self.request.response.status_int = 404
         msg = 'No %s or %s backups match %s' % (
             self.hmn_collection_name, self.hmn_member_name, pk)
         LOGGER.warning(msg)
-        return {'error': msg}
+        return {'error': msg}, 404
 
     ###########################################################################
     # Private methods for write-able resources
@@ -683,7 +683,6 @@ class Resources(ReadonlyResources):
         """
         return SchemaState(
             full_dict=values,
-            db=self.db,
             logged_in_user=self.logged_in_user)
 
     def _get_update_state(self, values, pk, resource_model):
@@ -728,10 +727,11 @@ class Resources(ReadonlyResources):
     def _get_new_edit_data(self, get_params):
         """Return a dict containing the data (related models) necessary to
         create a new (or edit an existing) resource model of the given type.
-        :param get_params: the ``request.GET`` dictionary-like object generated
-            by Pylons which contains the query string parameters of the request.
+        :param get_params: the ``request.GET`` dictionary-like QueryDict object
+                           generated by Django which contains the query string
+                           parameters of the request.
         :returns: A dictionary whose values are lists of objects needed to
-            create or update forms.
+                  create or update forms.
         If ``get_params`` has no keys, then return all collections encoded in
         ``self._get_new_edit_collections()``. If ``get_params`` does have keys,
         then for each key whose value is a non-empty string (and not a valid
@@ -782,82 +782,37 @@ class Resources(ReadonlyResources):
     @property
     def resource_collections(self):
         return {
-            'allowed_file_types': ResCol(
-                '',
-                lambda: ALLOWED_FILE_TYPES),
-            'collection_types': ResCol(
-                '',
-                lambda: COLLECTION_TYPES),
-            'corpora': ResCol(
-                'Corpus',
-                self.db.get_mini_dicts_getter('Corpus')),
-            'corpus_formats': ResCol(
-                '',
-                lambda: list(CORPUS_FORMATS.keys())),
-            'elicitation_methods': ResCol(
-                'ElicitationMethod',
-                self.db.get_mini_dicts_getter('ElicitationMethod')),
-            'form_searches': ResCol(
-                'FormSearch',
-                self.db.get_mini_dicts_getter('FormSearch')),
-            'grammaticalities': ResCol(
-                'ApplicationSettings',
-                self.db.get_grammaticalities),
-            'languages': ResCol(
-                'Language',
-                self.db.get_languages),
-            'markup_languages': ResCol(
-                '',
-                lambda: MARKUP_LANGUAGES),
-            'morphologies': ResCol(
-                'Morphology',
-                self.db.get_mini_dicts_getter('Morphology')),
-            'morpheme_language_models': ResCol(
-                'MorphemeLanguageModel',
-                self.db.get_mini_dicts_getter('MorphemeLanguageModel')),
-            'orthographies': ResCol(
-                'Orthography',
-                self.db.get_mini_dicts_getter('Orthography')),
-            'phonologies': ResCol(
-                'Phonology',
-                self.db.get_mini_dicts_getter('Phonology')),
-            'roles': ResCol(
-                '',
-                lambda: USER_ROLES),
-            'sources': ResCol(
-                'Source',
-                self.db.get_mini_dicts_getter('Source')),
-            'speakers': ResCol(
-                'Speaker',
-                self.db.get_mini_dicts_getter('Speaker')),
-            'syntactic_categories': ResCol(
-                'SyntacticCategory',
-                self.db.get_mini_dicts_getter('SyntacticCategory')),
-            'syntactic_category_types': ResCol(
-                '',
-                lambda: SYNTACTIC_CATEGORY_TYPES),
-            'tags': ResCol(
-                'Tag',
-                self.db.get_mini_dicts_getter('Tag')),
-            'toolkits': ResCol(
-                '',
-                lambda: LANGUAGE_MODEL_TOOLKITS),
-            'types': ResCol(  # BibTeX entry types
-                '',
-                lambda: list(ENTRY_TYPES.keys())),
-            'users': ResCol(
-                'User',
-                self.db.get_mini_dicts_getter('User')),
-            'utterance_types': ResCol(
-                '',
-                lambda: UTTERANCE_TYPES)
+            'package_types': ResCol(
+                model_name='',
+                getter=lambda: models.Package.PACKAGE_TYPE_CHOICES),
+            'package_statuses': ResCol(
+                model_name='',
+                getter=lambda: models.Package.STATUS_CHOICES),
+            'space_access_protocols': ResCol(
+                model_name='',
+                getter=lambda: models.Space.ACCESS_PROTOCOL_CHOICES),
+            'location_purposes': ResCol(
+                model_name='',
+                getter=lambda: models.Location.PURPOSE_CHOICES),
+            'packages': ResCol(
+                'Package',
+                get_mini_dicts_getter('Package')),
+            'pipelines': ResCol(
+                'Pipeline',
+                get_mini_dicts_getter('Pipeline')),
+            'locations': ResCol(
+                'Location',
+                get_mini_dicts_getter('Location')),
+            'spaces': ResCol(
+                'Space',
+                get_mini_dicts_getter('Space')),
         }
 
     def _get_new_edit_collections(self):
         """Return a sequence of strings representing the names of the
         collections (typically resource collections) that are required in order
         to create a new, or edit an existing, resource of the given type. For
-        many resources, an empty typle is fine, but for others an override
+        many resources, an empty tuple is fine, but for others an override
         returning a tuple of collection names from the keys of
         ``self.resource_collections`` will be required.
         """
@@ -871,21 +826,10 @@ class Resources(ReadonlyResources):
         return ()
 
 
-class SchemaState:
-    """Empty class used to create a state instance with a 'full_dict' attribute
-    that points to a dict of values being validated by a schema. For example,
-    the call to FormSchema().to_python requires this State() instance as its
-    second argument in order to make the inventory-based validators work
-    correctly (see, e.g., ValidOrthographicTranscription).
-    """
+class SchemaState(object):
 
-    def __init__(self, full_dict=None, db=None, logged_in_user=None,
-                 **kwargs):
-        """Return a State instance with some special attributes needed in the
-        forms and oldcollections controllers.
-        """
+    def __init__(self, full_dict=None, logged_in_user=None, **kwargs):
         self.full_dict = full_dict
-        self.db = db
         self.user = logged_in_user
         for key, val in kwargs.items():
             setattr(self, key, val)
@@ -929,6 +873,36 @@ def add_pagination(query_set, paginator):
 
 class Packages(Resources):
 
+    def update(self, pk):
+
+
+    def _get_user_data(self, data):
+        return {
+            'description': h.normalize(data['description']),
+        }
+
+    def _get_create_data(self, data):
+        return self._get_update_data(self._get_user_data(data))
+
+    def _get_update_data(self, user_data):
+        user_data.update({})
+        return user_data
+
+    def _get_new_edit_collections(self):
+        """Returns the names of the collections that are required in order to
+        create a new, or edit an existing, pipeline.
+        """
+        return (
+            'package_types',
+            'package_statuses',
+            'locations',
+            'packages',
+            'pipelines',
+        )
+
+
+class Pipelines(Resources):
+
     def _get_user_data(self, data):
         return {
             'description': h.normalize(data['description']),
@@ -942,11 +916,11 @@ class Packages(Resources):
         return user_data
 
 
-class Pipelines(Resources):
+class Spaces(Resources):
 
     def _get_user_data(self, data):
         return {
-            'description': h.normalize(data['description']),
+            'path': h.normalize(data['path']),
         }
 
     def _get_create_data(self, data):

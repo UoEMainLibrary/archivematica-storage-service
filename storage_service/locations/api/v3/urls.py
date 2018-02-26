@@ -78,7 +78,7 @@ RESOURCES = {
     'package': {},
     'space': {},
     'pipeline': {},
-    #'file': {}
+    # 'file': {}
 }
 
 RESOURCE_ACTIONS = ('create',

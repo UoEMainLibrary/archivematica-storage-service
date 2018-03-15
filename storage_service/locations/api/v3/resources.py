@@ -46,6 +46,7 @@ import inflect
 import locations.models as models
 from locations.api.v3.querybuilder import QueryBuilder, SearchParseError
 import locations.api.v3.schemata as schemata
+import locations.api.v3.utils as utils
 
 LOGGER = logging.getLogger(__name__)
 
@@ -754,7 +755,7 @@ class Resources(ReadonlyResources):
                 val = get_params.get(collection)
                 # Proceed so long as val is not an empty string.
                 if val:
-                    val_as_datetime_obj = h.datetime_string2datetime(val)
+                    val_as_datetime_obj = utils.datetime_string2datetime(val)
                     if val_as_datetime_obj:
                         # Value of param is an ISO 8601 datetime string that
                         # does not match the most recent datetime_modified of
@@ -878,7 +879,7 @@ class Packages(Resources):
 
     def _get_user_data(self, data):
         return {
-            'description': h.normalize(data['description']),
+            'description': utils.normalize(data['description']),
         }
 
     def _get_create_data(self, data):
@@ -905,7 +906,7 @@ class Pipelines(Resources):
 
     def _get_user_data(self, data):
         return {
-            'description': h.normalize(data['description']),
+            'description': utils.normalize(data['description']),
         }
 
     def _get_create_data(self, data):
@@ -920,7 +921,7 @@ class Spaces(Resources):
 
     def _get_user_data(self, data):
         return {
-            'path': h.normalize(data['path']),
+            'path': utils.normalize(data['path']),
         }
 
     def _get_create_data(self, data):

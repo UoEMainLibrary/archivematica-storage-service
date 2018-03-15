@@ -73,77 +73,24 @@ target the Package model by default.
         >>>  (Q(size__lt=1000) | Q(size__gt=512)))
 """
 
-import datetime
 import functools
 import logging
 import operator
-import unicodedata
 
 from django.db.models import Q
 
 import locations.models as models
+import locations.api.v3.utils as utils
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-def normalize(unistr):
-    """Return a unistr using canonical decompositional normalization (NFD)."""
-    try:
-        return unicodedata.normalize('NFD', unistr)
-    except TypeError:
-        return unicodedata.normalize('NFD', unistr.decode('utf8'))
-    except UnicodeDecodeError:
-        return unistr
-
-
-def get_rdbms_name(settings):
-    if 'sqlite' in settings.DATABASES['default']['ENGINE']:
-        return 'sqlite'
-    return 'mysql'
-
-
-def round_datetime(dt):
-    """Round a datetime to the nearest second."""
-    discard = datetime.timedelta(microseconds=dt.microsecond)
-    dt -= discard
-    if discard >= datetime.timedelta(microseconds=500000):
-        dt += datetime.timedelta(seconds=1)
-    return dt
-
-
-def datetime_string2datetime(datetime_string):
-    """Parse an ISO 8601-formatted datetime into a Python datetime object.
-    Cf. http://stackoverflow.com/questions/531157/\
-        parsing-datetime-strings-with-microseconds
-    """
-    try:
-        parts = datetime_string.split('.')
-        years_to_seconds_string = parts[0]
-        datetime_object = datetime.datetime.strptime(
-            years_to_seconds_string, "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
-        return None
-    try:
-        microseconds = int(parts[1])
-        datetime_object = datetime_object.replace(microsecond=microseconds)
-    except (IndexError, ValueError, OverflowError):
-        pass
-    return datetime_object
-
-
-def date_string2date(date_string):
-    try:
-        return datetime.datetime.strptime(date_string, "%Y-%m-%d").date()
-    except ValueError:
-        return None
 
 
 class SearchParseError(Exception):
 
     def __init__(self, errors):
         self.errors = errors
-        super().__init__()
+        super(SearchParseError, self).__init__()
 
     def __repr__(self):
         return '; '.join(['%s: %s' % (k, self.errors[k]) for k in self.errors])
@@ -311,7 +258,7 @@ class QueryBuilder(object):
             # None can be used on date comparisons so assume this is what was
             # intended
             return date_string
-        date = date_string2date(date_string)
+        date = utils.date_string2date(date_string)
         if date is None:
             self._add_to_errors(
                 'date %s' % str(date_string),
@@ -324,7 +271,7 @@ class QueryBuilder(object):
             # None can be used on datetime comparisons so assume this is what
             # was intended
             return datetime_string
-        datetime_ = datetime_string2datetime(datetime_string)
+        datetime_ = utils.datetime_string2datetime(datetime_string)
         if datetime_ is None:
             self._add_to_errors(
                 'datetime %s' % str(datetime_string),
@@ -569,7 +516,7 @@ class QueryBuilder(object):
     def _normalize(value):
         def normalize_if_string(value):
             if isinstance(value, str):
-                return normalize(value)
+                return utils.normalize(value)
             return value
         value = normalize_if_string(value)
         if isinstance(value, list):

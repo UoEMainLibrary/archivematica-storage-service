@@ -324,7 +324,7 @@ class DSpaceREST(models.Model):
             raise DSpaceRESTException('Not a JSON response.')
 
     def _assign_destination(self, package_type, destinations):
-        ds_collection = as_archival_repo = as_archival_obj, as_link_bitstreams = None
+        ds_collection = as_archival_repo = as_archival_obj = as_link_bitstreams = None
         if package_type == 'DIP':
             ds_collection = destinations.get(
                 'dspace_dip_collection', self.ds_dip_collection)

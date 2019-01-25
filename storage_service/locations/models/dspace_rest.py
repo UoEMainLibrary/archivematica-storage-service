@@ -194,7 +194,8 @@ class DSpaceREST(models.Model):
                 namespaces=utils.NSMAP)
             if other_metadata is not None:
                 for repo_key in ['dspace_dip_collection', 'dspace_aip_collection',
-                                 'archivesspace_dip_repository', 'archivesspace_dip_collection']:
+                                 'archivesspace_dip_repository', 'archivesspace_dip_collection',
+                                 'archivesspace_link_bitstreams']:
                     if other_metadata.findtext(repo_key) is not None:
                         repos[repo_key] = other_metadata.findtext(repo_key)
             elif dc_metadata is not None:
@@ -323,7 +324,7 @@ class DSpaceREST(models.Model):
             raise DSpaceRESTException('Not a JSON response.')
 
     def _assign_destination(self, package_type, destinations):
-        ds_collection = as_archival_repo = as_archival_obj = None
+        ds_collection = as_archival_repo = as_archival_obj, as_link_bitstreams = None
         if package_type == 'DIP':
             ds_collection = destinations.get(
                 'dspace_dip_collection', self.ds_dip_collection)
@@ -331,10 +332,12 @@ class DSpaceREST(models.Model):
                 'archivesspace_dip_repository', self.as_repository)
             as_archival_obj = destinations.get(
                 'archivesspace_dip_archival_object', self.as_archival_object)
+            as_link_bitstreams = destinations.get(
+                'archivesspace_link_bitstreams', False)
         elif package_type == 'AIP':
             ds_collection = destinations.get(
                 'dspace_aip_collection', self.ds_aip_collection)
-        return ds_collection, as_archival_repo, as_archival_obj
+        return ds_collection, as_archival_repo, as_archival_obj, as_link_bitstreams
 
     @staticmethod
     def _get_base_url(parsed_url):
@@ -375,17 +378,14 @@ class DSpaceREST(models.Model):
                     as_archival_repo))
 
     def _link_dip_to_archivesspace(self, as_client, as_archival_repo, as_archival_obj,
-                                   package_uuid, package_title, ds_item):
+                                   package_uuid, package_title, as_link):
         try:
             as_client.add_digital_object(
                 '/repositories/{}/archival_objects/{}'.format(
                     as_archival_repo, as_archival_obj),
                 package_uuid,
                 title=package_title,
-                uri='{}://{}/handle/{}'.format(
-                    self.ds_rest_url.scheme,
-                    self.ds_rest_url.netloc,
-                    ds_item['handle']))
+                uri=as_link)
         except CommunicationError as err:
             if err.response and err.response.status_code == 404:
                 raise DSpaceRESTException(
@@ -416,15 +416,45 @@ class DSpaceREST(models.Model):
                 'Error depositing AIP at {} to DSpace via URL {}.'.format(
                     source_path, bitstream_url))
 
+    def _get_bitstreams(self, ds_sessionid, item_id):
+        try:
+            response = requests.get('{}/items/{}/bitstreams'.format(self._get_base_url(self.ds_rest_url), item_id),
+                                    headers=HEADERS,
+                                    cookies={'JSESSIONID': ds_sessionid},
+                                    verify=self.verify_ssl)
+        except RequestException:
+            print('Could not get bitstreams for item: {}'.format(item_id))
+
+        return response.json()
+
     def _handle_dip(self, source_path, ds_item, ds_sessionid, as_archival_repo,
-                    as_archival_obj, package, package_title):
+                    as_archival_obj, as_link_bitstreams, package, package_title):
         self._deposit_dip_to_dspace(
             source_path, ds_item, ds_sessionid)
         if all([self.as_url, self.as_user, self.as_password,
                 self.as_repository, as_archival_obj]):
-            self._link_dip_to_archivesspace(
-                self._get_as_client(as_archival_repo), as_archival_repo,
-                as_archival_obj, package.uuid, package_title, ds_item)
+            as_client = self._get_as_client(as_archival_repo)
+
+            if as_link_bitstreams:  # create a digital object per bitstream
+                bitstreams = self._get_bitstreams(ds_sessionid, ds_item['uuid'])
+
+                for bitstream in bitstreams:
+                    as_link = '{}://{}/bitstream/handle/{}'.format(
+                        self.ds_rest_url.scheme,
+                        self.ds_rest_url.netloc,
+                        bitstream['name'])
+                    self._link_dip_to_archivesspace(
+                        as_client, as_archival_repo,
+                        as_archival_obj, package.uuid, package_title, as_link)
+
+            else:  # create digital object matching to DSpace record
+                as_link = '{}://{}/handle/{}'.format(
+                    self.ds_rest_url.scheme,
+                    self.ds_rest_url.netloc,
+                    ds_item['handle'])
+                self._link_dip_to_archivesspace(
+                    as_client, as_archival_repo,
+                    as_archival_obj, package.uuid, package_title, as_link)
 
     def _handle_aip(self, source_path, ds_item, ds_sessionid):
         self._deposit_aip_to_dspace(
@@ -461,7 +491,8 @@ class DSpaceREST(models.Model):
         # Item to be created in DSpace
         metadata, destinations, package_title = self._get_metadata(
             source_path, package.uuid, package.package_type)
-        ds_collection, as_archival_repo, as_archival_obj = self._assign_destination(
+        ds_collection, as_archival_repo, as_archival_obj,\
+            as_link_bitstreams = self._assign_destination(
             package.package_type, destinations)
         # Logging in to REST api gives us a session id
         ds_sessionid = self._login_to_dspace_rest()
@@ -470,7 +501,7 @@ class DSpaceREST(models.Model):
                 metadata, ds_sessionid, ds_collection)
             if package.package_type == 'DIP':
                 self._handle_dip(source_path, ds_item, ds_sessionid, as_archival_repo,
-                                 as_archival_obj, package, package_title)
+                                 as_archival_obj, as_link_bitstreams, package, package_title)
             else:
                 self._handle_aip(source_path, ds_item, ds_sessionid)
         finally:

@@ -445,7 +445,8 @@ class DSpaceREST(models.Model):
                         bitstream['name'])
                     self._link_dip_to_archivesspace(
                         as_client, as_archival_repo,
-                        as_archival_obj, package.uuid, package_title, as_link)
+                        as_archival_obj, (package.uuid + '_' + bitstream['name']),
+                        package_title, as_link)
 
             else:  # create digital object matching to DSpace record
                 as_link = '{}://{}/handle/{}'.format(

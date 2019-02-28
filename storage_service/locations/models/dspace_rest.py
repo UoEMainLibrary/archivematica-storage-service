@@ -331,7 +331,7 @@ class DSpaceREST(models.Model):
             as_archival_repo = destinations.get(
                 'archivesspace_dip_repository', self.as_repository)
             as_archival_obj = destinations.get(
-                'archivesspace_dip_archival_object', self.as_archival_object)
+                'archivesspace_dip_collection', self.as_archival_object)
             as_link_bitstreams = destinations.get(
                 'archivesspace_link_bitstreams', False)
         elif package_type == 'AIP':
@@ -345,20 +345,22 @@ class DSpaceREST(models.Model):
             url=parsed_url)
 
     def _deposit_dip_to_dspace(self, source_path, ds_item, ds_sessionid):
+        LOGGER.info('Depositing DIP to DSpace: {}'.format(source_path))
         base_url = '{}/items/{}'.format(
             self._get_base_url(self.ds_rest_url), ds_item['uuid'])
         for root, __, files in os.walk(source_path):
             for name in files:
-                bitstream_url = '{}/bitstreams?name={}'.format(
-                    base_url, urllib.quote(name.encode('utf-8')))
-                try:
-                    with open(os.path.join(root, name), 'rb') as content:
-                        self._post(bitstream_url,
-                                  data=content,
-                                  cookies={'JSESSIONID': ds_sessionid})
-                except Exception:
-                    raise DSpaceRESTException(
-                        'Error sending {} to {}.'.format(name, bitstream_url))
+                if not 'processingMCP.xml' in name and not (name.startswith('METS') and name.endswith(".xml")):
+                    bitstream_url = '{}/bitstreams?name={}'.format(
+                        base_url, urllib.quote(name.encode('utf-8')[37:]))
+                    try:
+                        with open(os.path.join(root, name), 'rb') as content:
+                            self._post(bitstream_url,
+                                      data=content,
+                                      cookies={'JSESSIONID': ds_sessionid})
+                    except Exception:
+                        raise DSpaceRESTException(
+                            'Error sending {} to {}.'.format(name, bitstream_url))
 
     def _get_as_client(self, as_archival_repo):
         try:
@@ -385,13 +387,15 @@ class DSpaceREST(models.Model):
                     as_archival_repo, as_archival_obj),
                 package_uuid,
                 title=package_title,
-                uri=as_link)
+                uri=as_link,
+                xlink_show='replace')
         except CommunicationError as err:
+            LOGGER.error('ERROR: AS repository: {} --- archival object: {}'.format(as_archival_repo, as_archival_obj))
             if err.response and err.response.status_code == 404:
                 raise DSpaceRESTException(
                     '{}Either repository {} or archival object {} does not'
                     ' exist.'.format(
-                        AS_DO_ADD_ERR, self.as_repository, as_archival_obj))
+                        AS_DO_ADD_ERR, as_archival_repo, as_archival_obj))
             raise DSpaceRESTException(
                 '{}ArchivesSpace Server error: {}.'.format(AS_DO_ADD_ERR, err))
         except Exception as err:
@@ -399,6 +403,7 @@ class DSpaceREST(models.Model):
                 'ArchivesSpace Server error: {}.'.format(err))
 
     def _deposit_aip_to_dspace(self, source_path, ds_item, ds_sessionid):
+        LOGGER.info('Depositing AIP to DSpace: {}'.format(source_path))
         bitstream_url = (
             '{base_url}/items/{uuid}/bitstreams?name={name}'.format(
                 base_url=self._get_base_url(self.ds_rest_url),
@@ -423,12 +428,13 @@ class DSpaceREST(models.Model):
                                     cookies={'JSESSIONID': ds_sessionid},
                                     verify=self.verify_ssl)
         except RequestException:
-            print('Could not get bitstreams for item: {}'.format(item_id))
+            raise DSpaceRESTException('Could not get bitstreams for item: {}'.format(item_id))
 
         return response.json()
 
     def _handle_dip(self, source_path, ds_item, ds_sessionid, as_archival_repo,
                     as_archival_obj, as_link_bitstreams, package, package_title):
+        LOGGER.info('Handling DIP')
         self._deposit_dip_to_dspace(
             source_path, ds_item, ds_sessionid)
         if all([self.as_url, self.as_user, self.as_password,
@@ -436,23 +442,27 @@ class DSpaceREST(models.Model):
             as_client = self._get_as_client(as_archival_repo)
 
             if as_link_bitstreams:  # create a digital object per bitstream
+                LOGGER.info('Depositing DIP to ArchivesSpace per file: {}'.format(source_path))
                 bitstreams = self._get_bitstreams(ds_sessionid, ds_item['uuid'])
+                as_link = '{}://{}/bitstream/handle/{}'.format(
+                    self.ds_rest_url.scheme,
+                    self.ds_rest_url.netloc,
+                    ds_item['handle']).replace(':{}'.format(DFLT_DS_PORT), '')
 
-                for bitstream in bitstreams:
-                    as_link = '{}://{}/bitstream/handle/{}'.format(
-                        self.ds_rest_url.scheme,
-                        self.ds_rest_url.netloc,
-                        bitstream['name'])
+                for i, bitstream in enumerate(bitstreams):
+                    LOGGER.info('----- {}'.format(bitstream))
                     self._link_dip_to_archivesspace(
                         as_client, as_archival_repo,
-                        as_archival_obj, (package.uuid + '_' + bitstream['name']),
-                        package_title, as_link)
+                        as_archival_obj, (package.uuid + '_' + str(i)),
+                        bitstream['name'], '{}/{}'.format(as_link,
+                        bitstream['name']))
 
             else:  # create digital object matching to DSpace record
+                LOGGER.info('Depositing DIP to ArchivesSpace: {}'.format(source_path))
                 as_link = '{}://{}/handle/{}'.format(
                     self.ds_rest_url.scheme,
                     self.ds_rest_url.netloc,
-                    ds_item['handle'])
+                    ds_item['handle']).replace(':{}'.format(DFLT_DS_PORT), '')
                 self._link_dip_to_archivesspace(
                     as_client, as_archival_repo,
                     as_archival_obj, package.uuid, package_title, as_link)

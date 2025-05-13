@@ -1,0 +1,19 @@
+
+{% extends "administration/base.html" %}
+{% load i18n %}
+
+{% block page_title %}{{ action }}{% endblock %}
+
+{% block content %}
+
+<div class='user'>
+    <dl>
+      <dt>{% trans "Username" %}</dt>
+      <dd>{{ user.username }}</dd>
+      <dt>{% trans "Name" %}</dt>
+      <dd>{{ user.get_full_name }}</dd>
+      <dt>{% trans "E-mail" %}</dt>
+      <dd>{{ user.email }}</dd>
+    </dl>
+</div>
+{% endblock %}

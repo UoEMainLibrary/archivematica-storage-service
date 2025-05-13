@@ -1,5 +1,5 @@
 ARG TARGET=archivematica-storage-service
-ARG UBUNTU_VERSION=22.04
+ARG UBUNTU_VERSION=24.04
 ARG USER_ID=1000
 ARG GROUP_ID=1000
 ARG PYTHON_VERSION=3.9
@@ -11,8 +11,15 @@ FROM ubuntu:${UBUNTU_VERSION} AS base-builder
 
 ARG PYENV_DIR=/pyenv
 
-ENV DEBIAN_FRONTEND noninteractive
-ENV PYTHONUNBUFFERED 1
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Ubuntu 24.04 and later Docker images include a default user with UID (1000)
+# and GID (1000). Remove this user to prevent conflicts with the USER_ID and
+# GROUP_ID build arguments.
+RUN set -ex \
+	&& id -u ubuntu >/dev/null 2>&1 \
+	&& userdel --remove ubuntu || true
 
 RUN set -ex \
 	&& apt-get update \
@@ -25,12 +32,13 @@ RUN set -ex \
 		libsasl2-dev \
 		libsqlite3-dev \
 		locales \
+		pkg-config \
 	&& rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 RUN locale-gen en_US.UTF-8
-ENV LANG en_US.UTF-8
-ENV LANGUAGE en_US:en
-ENV LC_ALL en_US.UTF-8
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
 
 ENV PYENV_ROOT=${PYENV_DIR}/data
 ENV PATH=$PYENV_ROOT/shims:$PYENV_ROOT/bin:$PATH
@@ -73,7 +81,7 @@ RUN set -ex \
 
 # -----------------------------------------------------------------------------
 
-FROM base-builder as base
+FROM base-builder AS base
 
 ARG USER_ID=1000
 ARG GROUP_ID=1000
@@ -110,8 +118,8 @@ RUN set -ex \
 RUN set -ex \
 	&& internalDirs=' \
 		/home/archivematica \
-		/src/storage_service/assets \
-		/src/storage_service/locations/fixtures \
+		/src/archivematica/storage_service/assets \
+		/src/archivematica/storage_service/locations/fixtures \
 		/var/archivematica/storage_service \
 		/var/archivematica/sharedDirectory \
 	' \
@@ -121,30 +129,58 @@ RUN set -ex \
 USER archivematica
 
 COPY --chown=${USER_ID}:${GROUP_ID} --from=pyenv-builder --link ${PYENV_DIR} ${PYENV_DIR}
-COPY --link ./install/storage-service.gunicorn-config.py /etc/archivematica/storage-service.gunicorn-config.py
-COPY --chown=${USER_ID}:${GROUP_ID} --link . /src/
+COPY --chown=${USER_ID}:${GROUP_ID} --link ./install/storage-service.gunicorn-config.py /etc/archivematica/storage-service.gunicorn-config.py
+
+ENV PYTHONPATH=/src/src
 
 # -----------------------------------------------------------------------------
 
 FROM base AS archivematica-storage-service
 
-WORKDIR /src/storage_service
+ARG USER_ID=1000
+ARG GROUP_ID=1000
 
-ENV DJANGO_SETTINGS_MODULE storage_service.settings.local
-ENV PYTHONPATH /src/storage_service
-ENV SS_GUNICORN_BIND 0.0.0.0:8000
-ENV SS_GUNICORN_CHDIR /src/storage_service
-ENV SS_GUNICORN_ACCESSLOG -
-ENV SS_GUNICORN_ERRORLOG -
-ENV FORWARDED_ALLOW_IPS *
+ENV DJANGO_SETTINGS_MODULE=archivematica.storage_service.storage_service.settings.local
+ENV SS_GUNICORN_BIND=0.0.0.0:8000
+ENV SS_GUNICORN_CHDIR=/src/src/archivematica/storage_service
+ENV SS_GUNICORN_ACCESSLOG=-
+ENV SS_GUNICORN_ERRORLOG=-
+ENV FORWARDED_ALLOW_IPS=*
+
+COPY --chown=${USER_ID}:${GROUP_ID} --link . /src/
 
 RUN set -ex \
 	&& export SS_DB_URL=mysql://ne:ver@min/d \
-	&& pyenv exec python3 ./manage.py collectstatic --noinput --clear \
-	&& pyenv exec python3 ./manage.py compilemessages
+	&& pyenv exec python3 -m archivematica.storage_service.manage collectstatic --noinput --clear \
+	&& pyenv exec python3 -m archivematica.storage_service.manage compilemessages
 
-ENV DJANGO_SETTINGS_MODULE storage_service.settings.production
+ENV DJANGO_SETTINGS_MODULE=archivematica.storage_service.storage_service.settings.production
 
 EXPOSE 8000
 
-ENTRYPOINT ["pyenv", "exec", "python3", "-m", "gunicorn", "--config=/etc/archivematica/storage-service.gunicorn-config.py", "storage_service.wsgi:application"]
+ENTRYPOINT ["pyenv", "exec", "python3", "-m", "gunicorn", "--config=/etc/archivematica/storage-service.gunicorn-config.py", "archivematica.storage_service.storage_service.wsgi:application"]
+
+# -----------------------------------------------------------------------------
+
+FROM base AS archivematica-storage-service-tests
+
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+
+USER root
+
+RUN set -ex \
+	&& python3 -m playwright install-deps firefox \
+	&& mkdir -p /var/archivematica/.cache/ms-playwright \
+	&& chown -R archivematica:archivematica /var/archivematica/
+
+USER archivematica
+
+RUN set -ex \
+	&& python3 -m playwright install firefox
+
+COPY --chown=${USER_ID}:${GROUP_ID} --link . /src/
+
+# -----------------------------------------------------------------------------
+
+FROM ${TARGET}

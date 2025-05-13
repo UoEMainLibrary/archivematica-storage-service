@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% load i18n %}
+
+{% block page_title %}{% blocktrans %}{{ pipeline.description }} Information{% endblocktrans %}{% endblock %}
+
+{% block content %}
+
+<div class='pipeline'>
+  <dl>
+    <dt>{% trans "UUID" %}</dt> <dd>{{ pipeline.uuid }}</dd>
+    <dt>{% trans "Description" %}</dt> <dd>{{ pipeline.description|default:_("&lt;None&gt;") }}</dd>
+    <dt>{% trans "Remote name" %}</dt> <dd>{{ pipeline.remote_name|default:_("&lt;None&gt;") }}</dd>
+    <dt>{% trans "API Username" %}</dt> <dd>{{ pipeline.api_username|default:_("&lt;None&gt;") }}</dd>
+    <dt>{% trans "Enabled" %}</dt> <dd>{{ pipeline.enabled|yesno:_("Enabled,Disabled") }}</dd>
+    {% if perms.locations.change_pipeline %}
+      <dt>{% trans "Actions" %}</dt> <dd>
+        <ul>
+          <li><a href="{% url 'locations:pipeline_edit' pipeline.uuid %}">{% trans "Edit" %}</a></li>
+          <li><a href="{% url 'locations:pipeline_switch_enabled' pipeline.uuid %}?next={{ request.path }}">{{ pipeline.enabled|yesno:_("Disable,Enable") }}</a></li>
+          <li><a href="{% url 'locations:pipeline_delete' pipeline.uuid %}">{% trans "Delete" %}</a></li>
+        </ul>
+      </dd>
+    {% endif %}
+  </dl>
+</div>
+
+<h2>{% trans "Locations" %}</h2>
+
+{% if locations %}
+  {% include "snippets/locations_table.html" with no_pipeline=True %}
+{% else %}
+  <p>
+  {% url 'locations:space_list' as space_list_url %}
+  {% blocktrans %}No locations currently exist. Please create one from the <a href="{{ space_list_url }}">spaces</a> page.{% endblocktrans %}
+  </p>
+{% endif %}
+
+{% endblock %}

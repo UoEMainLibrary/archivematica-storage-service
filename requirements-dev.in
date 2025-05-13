@@ -3,9 +3,10 @@
 
 coverage
 pip-tools
+playwright
 pytest-cov
 pytest-django
-pytest-mock
+pytest-playwright
 pytest-randomly
 pytest
 tox

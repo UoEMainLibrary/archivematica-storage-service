@@ -1,8 +1,10 @@
 """Tests for the DSpace REST space."""
+
 import json
 import os
 import subprocess
 from collections import namedtuple
+from unittest import mock
 from uuid import uuid4
 
 import agentarchives
@@ -10,12 +12,12 @@ import pytest
 import requests
 from agentarchives import archivesspace
 from agentarchives.archivesspace.client import CommunicationError
-from locations.models import dspace_rest
-from locations.models import DSpaceREST
-from locations.models import Package
-from locations.models import Space
 from lxml import etree
 
+from archivematica.storage_service.locations.models import DSpaceREST
+from archivematica.storage_service.locations.models import Package
+from archivematica.storage_service.locations.models import Space
+from archivematica.storage_service.locations.models import dspace_rest
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 FIXTURES_DIR = os.path.abspath(os.path.join(THIS_DIR, "fixtures"))
@@ -83,11 +85,11 @@ DIP_SOURCE_PATH = f"{SOURCE_PATH}{DIP_NAME}"
 DIP_METS_PATH = os.path.join(DIP_SOURCE_PATH, AIP_METS_FILENAME)
 
 AIP_DEST_PATH = f"/x/y/z/{AIP_NAME}.7z"
-DS_REST_AIP_DEPO_URL = "{}/items/{}/bitstreams?name={}".format(
-    DS_REST_URL, DS_ITEM_UUID, AIP_FILENAME
+DS_REST_AIP_DEPO_URL = (
+    f"{DS_REST_URL}/items/{DS_ITEM_UUID}/bitstreams?name={AIP_FILENAME}"
 )
-DS_REST_DIP_DEPO_URL = "{}/items/{}/bitstreams?name={}".format(
-    DS_REST_URL, DS_ITEM_UUID, AIP_METS_FILENAME
+DS_REST_DIP_DEPO_URL = (
+    f"{DS_REST_URL}/items/{DS_ITEM_UUID}/bitstreams?name={AIP_METS_FILENAME}"
 )
 DSPACE_SPACE_EXTRACTABLE_METADATA = [
     {"language": "", "value": AIP_NAME_ORIG.title(), "key": "dc.title"}
@@ -305,8 +307,23 @@ class FakeArchivesSpaceClient:
         MoveFromCaseDIP(as_credentials_set=True, as_credentials_valid=as_ado_exc),
     ],
 )
+@mock.patch("agentarchives.archivesspace.ArchivesSpaceClient")
+@mock.patch("requests.post")
+@mock.patch("os.walk")
+@mock.patch("os.listdir")
+@mock.patch("builtins.open")
+@mock.patch("os.remove")
+@mock.patch("subprocess.Popen", return_value=MockProcess(["fake-command"]))
+@mock.patch("os.path.isfile")
 def test_move_from_storage_service(
-    mocker,
+    isfile,
+    popen,
+    remove,
+    open,
+    listdir,
+    walk,
+    post,
+    archives_space_client,
     package,
     ds_aip_collection,
     metadata,
@@ -317,7 +334,7 @@ def test_move_from_storage_service(
     as_credentials_valid,
     upload_to_tsm,
 ):
-    mocker.patch("os.path.isfile", return_value=getattr(package, "isfile", True))
+    isfile.return_value = getattr(package, "isfile", True)
     dspace_rest_space = DSpaceREST(
         space=Space(),
         ds_rest_url=DS_REST_URL,
@@ -354,12 +371,8 @@ def test_move_from_storage_service(
         return
 
     # Simple patches
-    mocker.patch("subprocess.Popen", return_value=MockProcess(["fake-command"]))
-    mocker.patch("lxml.etree.parse", return_value=etree.parse(package.fake_mets_file))
-    mocker.patch("os.remove")
-    mocker.patch("builtins.open")
-    mocker.patch("os.listdir", return_value=[AIP_METS_FILENAME])
-    mocker.patch("os.walk", return_value=[("", [], [AIP_METS_FILENAME])])
+    listdir.return_value = [AIP_METS_FILENAME]
+    walk.return_value = [("", [], [AIP_METS_FILENAME])]
 
     # Patch ``requests.post``
     def mock_requests_post(*args, **kwargs):
@@ -371,7 +384,7 @@ def test_move_from_storage_service(
             raise ds_request_validity.exc
         return FakeDSpaceRESTPOSTResponse()
 
-    mocker.patch("requests.post", side_effect=mock_requests_post)
+    post.side_effect = mock_requests_post
 
     # Patch ``agentarchives.archivesspace.ArchivesSpaceClient``
     if (
@@ -380,48 +393,49 @@ def test_move_from_storage_service(
         fake_as_client = FakeArchivesSpaceClient(exc=as_credentials_valid.exc)
     else:
         fake_as_client = FakeArchivesSpaceClient()
-    mocker.patch(
-        "agentarchives.archivesspace.ArchivesSpaceClient", return_value=fake_as_client
-    )
+    archives_space_client.return_value = fake_as_client
     if not as_credentials_valid.is_valid:
         agentarchives.archivesspace.ArchivesSpaceClient.side_effect = (
             as_credentials_valid.exc
         )
 
-    # Simulate AS request-related failure
-    if not as_credentials_valid.is_valid:
-        with pytest.raises(dspace_rest.DSpaceRESTException) as excinfo:
-            dspace_rest_space.move_from_storage_service(
-                package_source_path, AIP_DEST_PATH, package=package
-            )
-        return
+    with mock.patch(
+        "lxml.etree.parse", return_value=etree.parse(package.fake_mets_file)
+    ) as parse:
+        # Simulate AS request-related failure
+        if not as_credentials_valid.is_valid:
+            with pytest.raises(dspace_rest.DSpaceRESTException) as excinfo:
+                dspace_rest_space.move_from_storage_service(
+                    package_source_path, AIP_DEST_PATH, package=package
+                )
+            return
 
-    # Simulate AS "add digital object" failure
-    if (
-        not as_credentials_valid.is_valid
-    ) and as_credentials_valid.method_that_raises == "constructor":
-        with pytest.raises(dspace_rest.DSpaceRESTException) as excinfo:
-            dspace_rest_space.move_from_storage_service(
-                package_source_path, AIP_DEST_PATH, package=package
+        # Simulate AS "add digital object" failure
+        if (
+            not as_credentials_valid.is_valid
+        ) and as_credentials_valid.method_that_raises == "constructor":
+            with pytest.raises(dspace_rest.DSpaceRESTException) as excinfo:
+                dspace_rest_space.move_from_storage_service(
+                    package_source_path, AIP_DEST_PATH, package=package
+                )
+            assert excinfo.value.message == (
+                "Error depositing to DSpace or ArchiveSpace: Could not login to"
+                f" ArchivesSpace server: {AS_URL_NO_PORT}, port: {AS_PORT}, user: {AS_USER}, repository:"
+                f" {AS_REPOSITORY}"
             )
-        assert excinfo.value.message == (
-            "Error depositing to DSpace or ArchiveSpace: Could not login to"
-            " ArchivesSpace server: {}, port: {}, user: {}, repository:"
-            " {}".format(AS_URL_NO_PORT, AS_PORT, AS_USER, AS_REPOSITORY)
+            return
+
+        if not ds_request_validity.is_valid:
+            with pytest.raises(dspace_rest.DSpaceRESTException) as excinfo:
+                dspace_rest_space.move_from_storage_service(
+                    package_source_path, AIP_DEST_PATH, package=package
+                )
+            return
+
+        # Call the test-targeting method in the happy path
+        dspace_rest_space.move_from_storage_service(
+            package_source_path, AIP_DEST_PATH, package=package
         )
-        return
-
-    if not ds_request_validity.is_valid:
-        with pytest.raises(dspace_rest.DSpaceRESTException) as excinfo:
-            dspace_rest_space.move_from_storage_service(
-                package_source_path, AIP_DEST_PATH, package=package
-            )
-        return
-
-    # Call the test-targeting method in the happy path
-    dspace_rest_space.move_from_storage_service(
-        package_source_path, AIP_DEST_PATH, package=package
-    )
 
     # Assertions about the 4 requests.post calls:
     # 1. login to DSpace,
@@ -435,14 +449,14 @@ def test_move_from_storage_service(
         (_, actual_bitstream_args, actual_bitstream_kwargs),
         actual_logout_call,
     ) = requests.post.mock_calls
-    assert actual_login_call == mocker.call(
+    assert actual_login_call == mock.call(
         DS_REST_LOGIN_URL,
         cookies=None,
         data={"password": DS_PASSWORD, "email": DS_EMAIL},
         headers=None,
         verify=VERIFY_SSL,
     )
-    assert actual_logout_call == mocker.call(
+    assert actual_logout_call == mock.call(
         DS_REST_LOGOUT_URL,
         cookies=COOKIES,
         data=None,
@@ -462,7 +476,7 @@ def test_move_from_storage_service(
     assert actual_bitstream_kwargs["verify"] == VERIFY_SSL
     assert actual_bitstream_kwargs["cookies"] == COOKIES
     assert actual_bitstream_kwargs["headers"] == JSON_HEADERS
-    etree.parse.assert_called_once_with(package_mets_path)
+    parse.assert_called_once_with(package_mets_path)
 
     if package.package_type == Package.DIP:
         # No METS extraction happens with DIP, therefore no removal needed
@@ -474,9 +488,7 @@ def test_move_from_storage_service(
                 AS_URL_NO_PORT, AS_USER, AS_PASSWORD, AS_PORT, AS_REPOSITORY
             )
             assert fake_as_client.args == (
-                "/repositories/{}/archival_objects/{}".format(
-                    AS_REPOSITORY, AS_ARCHIVAL_OBJECT
-                ),
+                f"/repositories/{AS_REPOSITORY}/archival_objects/{AS_ARCHIVAL_OBJECT}",
                 PACKAGE_UUID,
             )
             assert fake_as_client.kwargs == {

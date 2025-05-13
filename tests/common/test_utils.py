@@ -1,22 +1,23 @@
-import os
+import pathlib
+import re
 import shutil
-import subprocess
 import tarfile
 from collections import namedtuple
 from io import StringIO
 from unittest import mock
 
 import pytest
-from common import utils
 from metsrw import FSEntry
 
-TEST_DIR = os.path.dirname(os.path.realpath(__file__))
-FIXTURES_DIR = os.path.join(TEST_DIR, "fixtures")
+from archivematica.storage_service.common import utils
+
+TEST_DIR = pathlib.Path(__file__).resolve().parent
+FIXTURES_DIR = TEST_DIR / "fixtures"
 
 # Until further work is done to bring compression into its own module we can
-# use these constants for this test, but we can do better.
-PROG_VERS_7Z = "7z"
-PROG_VERS_TAR = "tar"
+# use these regular expression patterns for this test, but we can do better.
+PROG_VERS_7Z = r"(p7zip|7-Zip)"
+PROG_VERS_TAR = r"tar"
 
 # Specifically string types for the tuple we create.
 COMPRESS_ORDER_ONE = "1"
@@ -47,10 +48,8 @@ def test_get_compression(pronom, algorithm, compression):
         "</mets:mets>"
     ) % (pronom, algorithm)
 
-    assert (
-        utils.get_compression(StringIO(xml)) == compression
-    ), "Incorrect compression value: {} returned for XML (pointer file) input".format(
-        compression
+    assert utils.get_compression(StringIO(xml)) == compression, (
+        f"Incorrect compression value: {compression} returned for XML (pointer file) input"
     )
 
 
@@ -84,49 +83,78 @@ def test_get_compress_command(compression, command):
     cmd, _ = utils.get_compress_command(
         compression, "/extract/", "filename", "/full/path"
     )
-    assert (
-        " ".join(cmd) == command
-    ), "Incorrect compression command: {} returned for compression input {}".format(
-        cmd, compression
+    assert " ".join(cmd) == command, (
+        f"Incorrect compression command: {cmd} returned for compression input {compression}"
     )
 
 
 @pytest.mark.parametrize(
-    "compression,command",
+    "compression,expected_program,expected_algorithm",
     [
-        (
-            utils.COMPRESSION_7Z_BZIP,
-            '#!/bin/bash\necho program="7z"\\; algorithm="bzip2"\\; version="`7z | grep Version`"',
-        ),
+        (utils.COMPRESSION_7Z_BZIP, "7z", utils.COMPRESS_ALGO_BZIP2),
         (
             utils.COMPRESSION_7Z_LZMA,
-            '#!/bin/bash\necho program="7z"\\; algorithm="lzma"\\; version="`7z | grep Version`"',
+            "7z",
+            utils.COMPRESS_ALGO_LZMA,
         ),
         (
             utils.COMPRESSION_7Z_COPY,
-            '#!/bin/bash\necho program="7z"\\; algorithm="copy"\\; version="`7z | grep Version`"',
+            "7z",
+            utils.COMPRESS_ALGO_7Z_COPY,
         ),
         (
             utils.COMPRESSION_TAR,
-            'echo program="tar"\\; algorithm=""\\; version="`tar --version | grep tar`"',
+            "tar",
+            "",
         ),
         (
             utils.COMPRESSION_TAR_GZIP,
-            'echo program="tar"\\; algorithm="-z"\\; version="`tar --version | grep tar`"',
+            "tar",
+            "-z",
         ),
         (
             utils.COMPRESSION_TAR_BZIP2,
-            'echo program="tar"\\; algorithm="-j"\\; version="`tar --version | grep tar`"',
+            "tar",
+            "-j",
         ),
     ],
 )
-def test_get_tool_info_command(compression, command):
-    cmd = utils.get_tool_info_command(compression)
-    assert (
-        cmd == command
-    ), "Incorrect tool info: {} returned for compression input {}".format(
-        cmd, compression
+@mock.patch("subprocess.check_output")
+def test_get_tool_info(check_output, compression, expected_program, expected_algorithm):
+    if expected_program == "7z":
+        expected_version = "p7zip Version 16.02"
+        command_output = b"\n".join(
+            [
+                b"",
+                b"7-Zip [64] 16.02 : Copyright (c) 1999-2016 Igor Pavlov : 2016-05-21",
+                expected_version.encode(),
+            ]
+        )
+    elif expected_program == "tar":
+        expected_version = "tar (GNU tar) 1.35"
+        command_output = b"\n".join(
+            [
+                expected_version.encode(),
+                b"Copyright (C) 2023 Free Software Foundation, Inc.",
+            ]
+        )
+    else:
+        raise AssertionError(f"unexpected program {expected_program}")
+    check_output.return_value = command_output
+    expected_output = f"program={expected_program}; algorithm={expected_algorithm}; version={expected_version}"
+
+    output = utils.get_tool_info(compression)
+
+    assert output == expected_output, (
+        f"Incorrect tool info: {output} returned for compression input {compression}"
     )
+
+
+def test_get_tool_info_fails_if_compression_algorithm_is_not_implemented():
+    with pytest.raises(
+        NotImplementedError, match="Algorithm unknown and random not implemented"
+    ):
+        utils.get_tool_info("unknown and random")
 
 
 @pytest.mark.parametrize(
@@ -134,18 +162,33 @@ def test_get_tool_info_command(compression, command):
     [
         (
             utils.COMPRESSION_7Z_BZIP,
-            "7z command\nVersion 3.0\nsomething else",
-            'program="7z"; version="Version 3.0"',
+            "\n7z command\np7zip Version 3.0\nsomething else",
+            'program="7z"; version="p7zip Version 3.0"',
+        ),
+        (
+            utils.COMPRESSION_7Z_BZIP,
+            "\n7-Zip 23.01 (x64)\n 64-bit locale=C.UTF-8\nsomething else",
+            'program="7z"; version="7-Zip 23.01 (x64) 64-bit locale=C.UTF-8"',
         ),
         (
             utils.COMPRESSION_7Z_LZMA,
-            "7z command\nVersion 3.0\nsomething else",
-            'program="7z"; version="Version 3.0"',
+            "\n7z command\np7zip Version 3.0\nsomething else",
+            'program="7z"; version="p7zip Version 3.0"',
+        ),
+        (
+            utils.COMPRESSION_7Z_LZMA,
+            "\n7-Zip 23.01 (x64)\n 64-bit locale=C.UTF-8\nsomething else",
+            'program="7z"; version="7-Zip 23.01 (x64) 64-bit locale=C.UTF-8"',
         ),
         (
             utils.COMPRESSION_7Z_COPY,
-            "7z command\nVersion 3.0\nsomething else",
-            'program="7z"; version="Version 3.0"',
+            "\n7z command\np7zip Version 3.0\nsomething else",
+            'program="7z"; version="p7zip Version 3.0"',
+        ),
+        (
+            utils.COMPRESSION_7Z_COPY,
+            "\n7-Zip 23.01 (x64)\n 64-bit locale=C.UTF-8\nsomething else",
+            'program="7z"; version="7-Zip 23.01 (x64) 64-bit locale=C.UTF-8"',
         ),
         (
             utils.COMPRESSION_TAR,
@@ -166,21 +209,19 @@ def test_get_tool_info_command(compression, command):
 )
 @mock.patch("subprocess.check_output")
 def test_get_compression_event_detail(
-    mock_subprocess, compression, cmd_output, expected_detail
+    check_output, compression, cmd_output, expected_detail
 ):
     # subprocess.check_output returns bytes in python3
-    mock_subprocess.return_value = cmd_output.encode("utf8")
+    check_output.return_value = cmd_output.encode("utf8")
     detail = utils.get_compression_event_detail(compression)
 
-    assert (
-        detail == expected_detail
-    ), "Incorrect detail: {} returned for compression input {}".format(
-        detail, compression
+    assert detail == expected_detail, (
+        f"Incorrect detail: {detail} returned for compression input {compression}"
     )
 
 
 @pytest.mark.parametrize(
-    "compression, version,extension,program_name,transform",
+    "compression,version,extension,program_name,transform",
     [
         (
             utils.COMPRESSION_7Z_BZIP,
@@ -265,7 +306,7 @@ def test_get_format_info(compression, version, extension, program_name, transfor
     """
     fsentry = FSEntry()
     vers, ext, prog_name = utils.set_compression_transforms(fsentry, compression, 1)
-    assert version in vers
+    assert re.search(version, vers) is not None
     assert ext == extension
     assert program_name in prog_name
     assert fsentry.transform_files == transform
@@ -307,33 +348,34 @@ def test_package_is_file(package_path, is_file):
         ExTarCase(path="/a/b/c", isdir=True, raises=True, expected="fail"),
     ],
 )
-def test_extract_tar(mocker, path, will_be_dir, sp_raises, expected):
+@mock.patch("pathlib.Path.rename")
+@mock.patch("pathlib.Path.unlink")
+@mock.patch("pathlib.Path.is_dir")
+@mock.patch("subprocess.check_output")
+def test_extract_tar(
+    check_output, is_dir, unlink, rename, path, will_be_dir, sp_raises, expected
+):
     if sp_raises:
-        mocker.patch.object(subprocess, "check_output", side_effect=OSError("gotcha!"))
-    else:
-        mocker.patch.object(subprocess, "check_output")
-    mocker.patch.object(os, "rename")
-    mocker.patch.object(os, "remove")
+        check_output.side_effect = OSError("gotcha!")
     if will_be_dir:
-        mocker.patch.object(os.path, "isdir", return_value=True)
+        is_dir.return_value = True
     else:
-        mocker.patch.object(os.path, "isdir", return_value=False)
-    tarpath_ext = f"{path}.tar"
-    dirname = os.path.dirname(tarpath_ext)
+        is_dir.return_value = False
+    path = pathlib.Path(path)
+    tarpath_ext = path.with_suffix(".tar")
+    dirname = tarpath_ext.parent
     if expected == "success":
         ret = utils.extract_tar(path)
         assert ret is None
-        os.remove.assert_called_once_with(tarpath_ext)
+        tarpath_ext.unlink.assert_called_once()
     else:
         with pytest.raises(utils.TARException) as excinfo:
             ret = utils.extract_tar(path)
         assert f"Failed to extract {path}: gotcha!" == str(excinfo.value)
-        os.rename.assert_any_call(tarpath_ext, path)
-        assert not os.remove.called
-    os.rename.assert_any_call(path, tarpath_ext)
-    subprocess.check_output.assert_called_once_with(
-        ["tar", "-xf", tarpath_ext, "-C", dirname]
-    )
+        tarpath_ext.rename.assert_any_call(path)
+        unlink.assert_not_called()
+    path.rename.assert_any_call(tarpath_ext)
+    check_output.assert_called_once_with(["tar", "-xf", tarpath_ext, "-C", dirname])
 
 
 @pytest.mark.parametrize(
@@ -397,39 +439,52 @@ def test_extract_tar(mocker, path, will_be_dir, sp_raises, expected):
         ),
     ],
 )
+@mock.patch("pathlib.Path.rename")
+@mock.patch("shutil.rmtree")
+@mock.patch("pathlib.Path.is_file")
+@mock.patch("tarfile.is_tarfile")
+@mock.patch("subprocess.check_output")
 def test_create_tar(
-    mocker, path, will_be_file, will_be_tar, sp_raises, expected, extension
+    check_output,
+    is_tarfile,
+    is_file,
+    rmtree,
+    rename,
+    path,
+    will_be_file,
+    will_be_tar,
+    sp_raises,
+    expected,
+    extension,
 ):
     if sp_raises:
-        mocker.patch.object(subprocess, "check_output", side_effect=OSError("gotcha!"))
-    else:
-        mocker.patch.object(subprocess, "check_output")
-    mocker.patch.object(os.path, "isfile", return_value=will_be_file)
-    mocker.patch.object(tarfile, "is_tarfile", return_value=will_be_tar)
-    mocker.patch.object(os, "rename")
-    mocker.patch.object(shutil, "rmtree")
-    fixed_path = path.rstrip("/")
-    tarpath = f"{fixed_path}.tar"
+        check_output.side_effect = OSError("gotcha!")
+    is_file.return_value = will_be_file
+    is_tarfile.return_value = will_be_tar
+
+    fixed_path = pathlib.Path(path)
+    tarpath = fixed_path.with_suffix(".tar")
     if expected == "success":
         ret = utils.create_tar(path)
         shutil.rmtree.assert_called_once_with(fixed_path)
-        os.rename.assert_called_once_with(tarpath, fixed_path)
+        tarpath.rename.assert_called_once_with(fixed_path)
         tarfile.is_tarfile.assert_any_call(fixed_path)
         assert ret is None
     else:
         with pytest.raises(utils.TARException) as excinfo:
             ret = utils.create_tar(path, extension=extension)
-        assert "Failed to create a tarfile at {} for dir at {}".format(
-            tarpath, fixed_path
-        ) == str(excinfo.value)
-        assert not shutil.rmtree.called
-        assert not os.rename.called
+        assert (
+            f"Failed to create a tarfile at {tarpath} for dir at {fixed_path}"
+            == str(excinfo.value)
+        )
+        rmtree.assert_not_called()
+        rename.assert_not_called()
     if not sp_raises:
-        os.path.isfile.assert_called_once_with(tarpath)
+        tarpath.is_file.assert_called_once()
         if will_be_file:
             tarfile.is_tarfile.assert_any_call(tarpath)
         if extension:
-            tarpath.endswith(utils.TAR_EXTENSION)
+            assert tarpath.suffix == utils.TAR_EXTENSION
 
 
 @pytest.mark.parametrize(
@@ -486,27 +541,32 @@ def test_strip_quad_dirs_from_path(input_path, expected_path):
         (["tagmanifest-md5.txt"], "tagmanifest-md5.txt"),
     ],
 )
-def test_find_tagmanifest(mocker, tmp_path, dir_listing, tagmanifest_file):
-    mocker.patch("os.listdir", return_value=dir_listing)
+@mock.patch("pathlib.Path.iterdir")
+def test_find_tagmanifest(iterdir, tmp_path, dir_listing, tagmanifest_file):
     aip_path = tmp_path / "aip"
     aip_path.mkdir()
-    file_path = aip_path / "file.txt"
-    file_path.write_text("test data")
+    mock_files = [aip_path / file_ for file_ in dir_listing]
+    iterdir.return_value = mock_files
+
     if tagmanifest_file is None:
         assert utils.find_tagmanifest(aip_path) is None
     else:
-        assert utils.find_tagmanifest(aip_path) == str(aip_path / tagmanifest_file)
+        assert utils.find_tagmanifest(aip_path) == aip_path / tagmanifest_file
+
+    file_path = aip_path / "file.txt"
+    file_path.write_text("test data")
     assert utils.find_tagmanifest(file_path) is None
 
 
-def test_generate_checksum_uncompressed_aip(mocker, tmp_path):
+@mock.patch("archivematica.storage_service.common.utils.find_tagmanifest")
+@mock.patch("pathlib.Path.is_dir", return_value=True)
+def test_generate_checksum_uncompressed_aip(is_dir, find_tag_manifest, tmp_path):
     aip_path = tmp_path / "aip"
     aip_path.mkdir()
     tagmanifest = aip_path / "tagmanifest-md5.txt"
     tagmanifest.write_text("some test data")
 
-    mocker.patch("os.path.isdir", return_value=True)
-    find_tag_manifest = mocker.patch("common.utils.find_tagmanifest")
+    find_tag_manifest.return_value = tagmanifest
 
     utils.generate_checksum(aip_path)
     find_tag_manifest.assert_called_once()
@@ -530,7 +590,7 @@ def test_get_compressed_package_checksum():
 
     # Test PREMIS 3 from fixture.
     assert utils.get_compressed_package_checksum(
-        os.path.join(FIXTURES_DIR, "premis_3_pointer.xml")
+        str(FIXTURES_DIR / "premis_3_pointer.xml")
     ) == ("c2924159fcbbeadf8d7f3962b43ec1bf301e1b4f12dd28a8b89ec819f3714747", "sha256")
 
 

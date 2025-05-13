@@ -73,6 +73,20 @@ of these settings or provide values to mandatory fields.
   - **Type:** `string`
   - :red_circle: **Mandatory!**
 
+- **`CSRF_TRUSTED_ORIGINS`**:
+  - **Description:** a comma separated list of trusted origins for unsafe
+    requests (e.g. POST). Must include the schema, e.g:
+    `"https://example.com,https://example2.com"`. <https://docs.djangoproject.com/en/dev/ref/settings/#csrf-trusted-origins>
+  - **Type:** `string`
+  - **Default:** `""`
+
+- **`USE_X_FORWARDED_HOST`**:
+  - **Description:** a boolean that specifies whether to use the
+    X-Forwarded-Host header in preference to the Host header. This should only
+    be enabled if a proxy which sets this header is in use. <https://docs.djangoproject.com/en/dev/ref/settings/#use-x-forwarded-host>
+  - **Type:** `boolean`
+  - **Defalt:** `false`
+
 - **`TIME_ZONE`**:
   - **Description:** application time zone. See [TIME_ZONE] for more details.
   - **Type:** `string`
@@ -524,6 +538,11 @@ If `SS_OIDC_AUTHENTICATION` is false, none of the other ones are used.
   - **Type:** `boolean`
   - **Default:** `false`
 
+- **`SS_OIDC_ALLOW_LOCAL_AUTHENTICATION`**:
+  - **Description:** Allows local authentication and authentication via OIDC.
+  - **Type:** `boolean`
+  - **Default:** `true`
+
 - **`OIDC_RP_CLIENT_ID`**:
   - **Description:** OIDC client ID
   - **Type:** `string`
@@ -560,10 +579,58 @@ If `SS_OIDC_AUTHENTICATION` is false, none of the other ones are used.
   - **Type:** `string`
   - **Default:** `''`
 
+- **`OIDC_OP_SET_ROLES_FROM_CLAIMS`**:
+  - **Description:** Set user roles from OIDC token claims
+  - **Type:** `boolean`
+  - **Default:** `False`
+
+- **`OIDC_OP_ROLE_CLAIM_PATH`**:
+  - **Description:** Set OIDC token path for extracting role info
+  - **Type:** `string`
+  - **Default:** `'realm_access.roles'`
+
+- **`OIDC_ACCESS_ATTRIBUTE_MAP`**
+  - **Description:** Set OIDC token details to extract. This string should be
+    JSON-decodable.
+  - **Type:** `string`
+  - **Default:** `{"given_name": "first_name", "family_name": "last_name"}`
+
+- **`OIDC_ROLE_CLAIM_ADMIN`**:
+  - **Description:** The OIDC role claim value which maps to the Admin role.
+  - **Type:** `string`
+  - **Default:** `admin`
+
+- **`OIDC_ROLE_CLAIM_MANAGER`**:
+  - **Description:** The OIDC role claim value which maps to the Manager role.
+  - **Type:** `string`
+  - **Default:** `manager`
+
+- **`OIDC_ROLE_CLAIM_REVIEWER`**:
+  - **Description:** The OIDC role claim value which maps to the Reviewer role.
+  - **Type:** `string`
+  - **Default:** `reviewer`
+
+- **`OIDC_ROLE_CLAIM_READER`**:
+  - **Description:** The OIDC role claim value which maps to the Reader role.
+  - **Type:** `string`
+  - **Default:** `reader`
+
 - **`OIDC_RP_SIGN_ALGO`**:
   - **Description:** Algorithm used by the ID provider to sign ID tokens
   - **Type:** `string`
   - **Default:** `HS256`
+
+- **`OIDC_USE_PKCE`**:
+  - **Description:** Controls whether the authentication backend uses PKCE
+(Proof Key For Code Exchange) during the authorization code flow.
+  - **Type:** `boolean`
+  - **Default:** `false`
+
+- **`OIDC_CODE_CHALLENGE_METHOD`**:
+  - **Description:** Sets the method used to generate the PKCE code challenge.
+This only has an effect if ``OIDC_USE_PKCE`` is ``True``.
+  - **Type:** `string`
+  - **Default:** `S256`
 
 ### AWS-specific environment variables
 
@@ -684,7 +751,7 @@ services.
 [DB_HOST]: https://docs.djangoproject.com/en/1.8/ref/settings/#host
 [#813]: https://github.com/artefactual/archivematica/pull/813
 [USER]: http://docs.gunicorn.org/en/stable/settings.html#user
-[GROUP]: http://docs.gunicorn.org/en/styable/settings.html#group
+[GROUP]: http://docs.gunicorn.org/en/stable/settings.html#group
 [BIND]: http://docs.gunicorn.org/en/stable/settings.html#bind
 [WORKERS]: http://docs.gunicorn.org/en/stable/settings.html#workers
 [WORKER-CLASS]: http://docs.gunicorn.org/en/stable/settings.html#worker-class

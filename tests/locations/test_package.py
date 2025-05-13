@@ -11,12 +11,12 @@ from unittest import mock
 
 import bagit
 import pytest
-from common import utils
 from django.contrib.messages import get_messages
 from django.test import TestCase
 from django.urls import reverse
-from locations import models
 
+from archivematica.storage_service.common import utils
+from archivematica.storage_service.locations import models
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 
@@ -87,10 +87,8 @@ class TestPackage(TestCase):
 
     def setUp(self):
         packages = models.Package.objects.all()
-        assert (
-            len(packages) == TOTAL_FIXTURE_PACKAGES
-        ), "Packages not loaded from fixtures correctly, got '{}' expected '{}'".format(
-            len(packages), TOTAL_FIXTURE_PACKAGES
+        assert len(packages) == TOTAL_FIXTURE_PACKAGES, (
+            f"Packages not loaded from fixtures correctly, got '{len(packages)}' expected '{TOTAL_FIXTURE_PACKAGES}'"
         )
 
         self.package = packages[0]
@@ -144,9 +142,11 @@ class TestPackage(TestCase):
 
         # Using our context manager make sure that the deletion happens
         # once for our source object.
-        with mock.patch("locations.models.Space.delete_path") as mocked_delete:
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Space.delete_path"
+        ) as mocked_delete:
             package.delete_from_storage()
-            assert mocked_delete.called
+            mocked_delete.assert_called()
 
         # Ensure that location properties are updated reflecting the
         # size remaining.
@@ -177,9 +177,11 @@ class TestPackage(TestCase):
 
         # Using our context manager make sure that the deletion can be
         # measured three times per our test parameters.
-        with mock.patch("locations.models.Space.delete_path") as mocked_delete:
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Space.delete_path"
+        ) as mocked_delete:
             package.delete_from_storage()
-            assert mocked_delete.called
+            mocked_delete.assert_called()
             assert mocked_delete.call_count == 3
 
         # Ensure locations sizes are updated to reflect the size
@@ -217,10 +219,11 @@ class TestPackage(TestCase):
         # raised, e.g. NotImplementedError for a space without a storage
         # service managed deletion capability.
         with mock.patch(
-            "locations.models.Space.delete_path", side_effect=NotImplementedError
+            "archivematica.storage_service.locations.models.Space.delete_path",
+            side_effect=NotImplementedError,
         ) as mocked_delete:
             package.delete_from_storage()
-            assert mocked_delete.called
+            mocked_delete.assert_called()
             assert mocked_delete.call_count == 1
 
         # Ensure locations sizes are the same as they were because no
@@ -278,7 +281,8 @@ class TestPackage(TestCase):
         # It returns an "error" message when the package could not be deleted
         # and the underlying code raised an exception.
         with mock.patch(
-            "locations.models.Package.delete_from_storage", side_effect=ValueError
+            "archivematica.storage_service.locations.models.Package.delete_from_storage",
+            side_effect=ValueError,
         ):
             response = self.client.post(url, follow=True)
             verify_redirect_message(
@@ -289,7 +293,7 @@ class TestPackage(TestCase):
 
         # It returns an "error" message when the package could not be deleted.
         with mock.patch(
-            "locations.models.Package.delete_from_storage",
+            "archivematica.storage_service.locations.models.Package.delete_from_storage",
             return_value=(False, "Something went wrong"),
         ):
             response = self.client.post(url, follow=True)
@@ -327,15 +331,22 @@ class TestPackage(TestCase):
             == "742f10b0-768a-4158-b255-94847a97c465"
         )
 
-    @mock.patch("common.utils.generate_checksum", return_value=_test_checksum())
+    @mock.patch(
+        "archivematica.storage_service.common.utils.generate_checksum",
+        return_value=_test_checksum(),
+    )
     def test_stored_checksum(self, generate_checksum):
         package = models.Package.objects.get(
             uuid="a59033c2-7fa7-41e2-9209-136f07174692"
         )
         assert package.checksum is None
 
-        with mock.patch("locations.models.Space.posix_move"):
-            with mock.patch("locations.models.Package._update_quotas"):
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Space.posix_move"
+        ):
+            with mock.patch(
+                "archivematica.storage_service.locations.models.Package._update_quotas"
+            ):
                 package.origin_path = "origin/path"
                 package.origin_location = models.Location.objects.get(
                     uuid="72ee3a1a-9497-46db-aa58-56ea8d7fedc5"
@@ -354,11 +365,20 @@ class TestPackage(TestCase):
                     == models.Package.DEFAULT_CHECKSUM_ALGORITHM
                 )
 
-    @mock.patch("locations.models.Package._update_quotas")
-    @mock.patch("locations.models.Space.move_to_storage_service")
-    @mock.patch("locations.models.Space.post_move_to_storage_service")
-    @mock.patch("locations.models.Space.move_from_storage_service")
-    @mock.patch("common.utils.generate_checksum", return_value=_test_checksum())
+    @mock.patch("archivematica.storage_service.locations.models.Package._update_quotas")
+    @mock.patch(
+        "archivematica.storage_service.locations.models.Space.move_to_storage_service"
+    )
+    @mock.patch(
+        "archivematica.storage_service.locations.models.Space.post_move_to_storage_service"
+    )
+    @mock.patch(
+        "archivematica.storage_service.locations.models.Space.move_from_storage_service"
+    )
+    @mock.patch(
+        "archivematica.storage_service.common.utils.generate_checksum",
+        return_value=_test_checksum(),
+    )
     def test_stored_checksum_posix_exception(
         self, update_quotas, move_to, post_move, move_from, generate_checksum
     ):
@@ -367,7 +387,9 @@ class TestPackage(TestCase):
         )
         assert package.checksum is None
 
-        with mock.patch("locations.models.Space.posix_move") as posix_move:
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Space.posix_move"
+        ) as posix_move:
             posix_move.side_effect = models.space.PosixMoveUnsupportedError
             package.origin_path = "origin/path"
             package.origin_location = models.Location.objects.get(
@@ -387,15 +409,22 @@ class TestPackage(TestCase):
                 == models.Package.DEFAULT_CHECKSUM_ALGORITHM
             )
 
-    @mock.patch("common.utils.generate_checksum", return_value=_test_checksum())
+    @mock.patch(
+        "archivematica.storage_service.common.utils.generate_checksum",
+        return_value=_test_checksum(),
+    )
     def test_stored_date(self, generate_checksum):
         package = models.Package.objects.get(
             uuid="a59033c2-7fa7-41e2-9209-136f07174692"
         )
         assert package.stored_date is None
 
-        with mock.patch("locations.models.Space.posix_move"):
-            with mock.patch("locations.models.Package._update_quotas"):
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Space.posix_move"
+        ):
+            with mock.patch(
+                "archivematica.storage_service.locations.models.Package._update_quotas"
+            ):
                 package.origin_path = "origin/path"
                 package.origin_location = models.Location.objects.get(
                     uuid="72ee3a1a-9497-46db-aa58-56ea8d7fedc5"
@@ -411,11 +440,20 @@ class TestPackage(TestCase):
                     package.stored_date, datetime.datetime
                 )
 
-    @mock.patch("locations.models.Package._update_quotas")
-    @mock.patch("locations.models.Space.move_to_storage_service")
-    @mock.patch("locations.models.Space.post_move_to_storage_service")
-    @mock.patch("locations.models.Space.move_from_storage_service")
-    @mock.patch("common.utils.generate_checksum", return_value=_test_checksum())
+    @mock.patch("archivematica.storage_service.locations.models.Package._update_quotas")
+    @mock.patch(
+        "archivematica.storage_service.locations.models.Space.move_to_storage_service"
+    )
+    @mock.patch(
+        "archivematica.storage_service.locations.models.Space.post_move_to_storage_service"
+    )
+    @mock.patch(
+        "archivematica.storage_service.locations.models.Space.move_from_storage_service"
+    )
+    @mock.patch(
+        "archivematica.storage_service.common.utils.generate_checksum",
+        return_value=_test_checksum(),
+    )
     def test_stored_date_posix_exception(
         self, update_quotas, move_to, post_move, move_from, generate_checksum
     ):
@@ -424,7 +462,9 @@ class TestPackage(TestCase):
         )
         assert package.stored_date is None
 
-        with mock.patch("locations.models.Space.posix_move") as posix_move:
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Space.posix_move"
+        ) as posix_move:
             posix_move.side_effect = models.space.PosixMoveUnsupportedError
             package.origin_path = "origin/path"
             package.origin_location = models.Location.objects.get(
@@ -766,7 +806,9 @@ class TestPackage(TestCase):
     def test_run_post_store_callbacks_aip(self):
         uuid = "473a9398-0024-4804-81da-38946040c8af"
         aip = models.Package.objects.get(uuid=uuid)
-        with mock.patch("locations.models.Callback.execute") as mocked_execute:
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Callback.execute"
+        ) as mocked_execute:
             aip.run_post_store_callbacks()
             # Only `post_store_aip` callbacks are executed
             assert mocked_execute.call_count == 1
@@ -778,7 +820,9 @@ class TestPackage(TestCase):
     def test_run_post_store_callbacks_aip_tricky_name(self):
         uuid = "708f7a1d-dda4-46c7-9b3e-99e188eeb04c"
         aip = models.Package.objects.get(uuid=uuid)
-        with mock.patch("locations.models.Callback.execute") as mocked_execute:
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Callback.execute"
+        ) as mocked_execute:
             aip.run_post_store_callbacks()
             # Only `post_store_aip` callbacks are executed
             assert mocked_execute.call_count == 1
@@ -792,7 +836,9 @@ class TestPackage(TestCase):
         aic, _ = models.Package.objects.update_or_create(
             uuid=uuid, defaults={"package_type": models.Package.AIC}
         )
-        with mock.patch("locations.models.Callback.execute") as mocked_execute:
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Callback.execute"
+        ) as mocked_execute:
             aic.run_post_store_callbacks()
             # Only enabled callbacks are executed
             assert mocked_execute.call_count == 1
@@ -802,7 +848,9 @@ class TestPackage(TestCase):
         dip, _ = models.Package.objects.update_or_create(
             uuid=uuid, defaults={"package_type": models.Package.DIP}
         )
-        with mock.patch("locations.models.Callback.execute") as mocked_execute:
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Callback.execute"
+        ) as mocked_execute:
             dip.run_post_store_callbacks()
             # Placeholder is replaced by the UUID in URI and body
             url = "https://consumer.com/api/v1/dip/%s/stored" % uuid
@@ -832,9 +880,9 @@ class TestPackage(TestCase):
         for subdir, _, files in os.walk(replica.current_location.full_path):
             for file_ in files:
                 found_structure.append(os.path.join(subdir, file_))
-        assert set(found_structure) == set(
-            expected_bagit_structure
-        ), "unexpected bag structure found:"
+        assert set(found_structure) == set(expected_bagit_structure), (
+            "unexpected bag structure found:"
+        )
 
     def test_replicate_aip_when_file(self):
         """Ensure that a replica can be created and its resulting
@@ -963,7 +1011,7 @@ class TestPackage(TestCase):
         self._test_bagit_structure(aip.replicas.first(), replication_dir)
         self._test_bagit_structure(aip.replicas.last(), replication_dir2)
 
-    @mock.patch("locations.models.gpg._gpg_encrypt")
+    @mock.patch("archivematica.storage_service.locations.models.gpg._gpg_encrypt")
     def test_replicate_aip_gpg_encrypted(self, mock_encrypt):
         """Ensure that a replica is created correctly for a replication
         space created with a GPG encryption and ensure that the calls
@@ -1114,7 +1162,9 @@ class TestPackage(TestCase):
             len(set(uploaded_repl)) == len(set(previous_replicas)) == len(OLD_REPLICAS)
         )
 
-        with mock.patch("locations.models.Space.move_rsync") as _:
+        with mock.patch(
+            "archivematica.storage_service.locations.models.Space.move_rsync"
+        ) as _:
             aip.create_replicas()
 
         # The replication process in the storage service will create
@@ -1302,7 +1352,7 @@ class TestPackage(TestCase):
 
         # Remove temporary directories for first AIP.
         with mock.patch(
-            "locations.models.package._get_ss_internal_full_path",
+            "archivematica.storage_service.locations.models.package._get_ss_internal_full_path",
             return_value=ss_internal.full_path,
         ):
             aip1.clear_local_tempdirs()
@@ -1368,6 +1418,83 @@ class TestPackage(TestCase):
             pkg.move(dst_location)
 
         assert pkg.current_location == dst_location
+
+
+@pytest.fixture
+@pytest.mark.django_db
+def space(tmp_path):
+    space_dir = tmp_path / "space"
+    space_dir.mkdir()
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+
+    space = models.Space.objects.create(
+        access_protocol=models.Space.LOCAL_FILESYSTEM,
+        path=space_dir,
+        staging_path=staging_dir,
+    )
+    models.LocalFilesystem.objects.create(space=space)
+    return space
+
+
+@pytest.fixture
+@pytest.mark.django_db
+def location(space):
+    aipstore = models.Location.objects.create(
+        space=space,
+        relative_path="fs-aips",
+        purpose="AS",
+    )
+    pathlib.Path(aipstore.full_path).mkdir()
+    return aipstore
+
+
+@pytest.fixture
+@pytest.mark.django_db
+def internal_location(space):
+    return models.Location.objects.create(
+        space=space, purpose=models.Location.STORAGE_SERVICE_INTERNAL, relative_path=""
+    )
+
+
+@pytest.fixture
+@pytest.mark.django_db
+def package(location):
+    result = models.Package.objects.create(
+        current_location=location,
+        current_path="working_bag.zip",
+        package_type="AIP",
+        status="Uploaded",
+    )
+    src = os.path.join(FIXTURES_DIR, "working_bag.zip")
+    shutil.copy(src, result.full_path)
+    return result
+
+
+@pytest.mark.django_db
+@mock.patch(
+    "archivematica.storage_service.common.utils.generate_checksum",
+    return_value=mock.Mock(
+        **{
+            "hexdigest.return_value": "098f6bcd4621d373cade4e832627b4f9",
+        }
+    ),
+)
+def test_get_fixity_check_report_send_signals_verifies_failed_fixity_check(
+    generate_checksum, package, internal_location
+):
+    package.checksum = "098f6bcd4621d373cade4e832627b4f6"
+    package.save()
+
+    report, response = package.get_fixity_check_report_send_signals()
+
+    assert response == {
+        "success": False,
+        "message": "Incorrect package checksum",
+        "failures": {"files": {"missing": [], "changed": [], "untracked": []}},
+        "timestamp": None,
+    }
 
 
 class TestTransferPackage(TestCase):

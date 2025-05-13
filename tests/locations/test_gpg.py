@@ -1,17 +1,18 @@
 """Tests for the GPG encrypted space."""
+
 import os
 import pathlib
-import tarfile
 from collections import namedtuple
+from typing import Any
+from unittest import mock
 
 import pytest
-from common import gpgutils
-from common import utils
 from django.test import TestCase
-from locations.models import gpg
-from locations.models import Package
-from locations.models import space
 from metsrw.plugins import premisrw
+
+from archivematica.storage_service.locations.models import Package
+from archivematica.storage_service.locations.models import gpg
+from archivematica.storage_service.locations.models import space
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 GPG_VERSION = "1.4.16"
@@ -39,7 +40,7 @@ TEST_AGENTS = [
         )
     )
 ]
-BROWSE_FAIL_DICT = {"directories": [], "entries": [], "properties": {}}
+BROWSE_FAIL_DICT: dict[str, Any] = {"directories": [], "entries": [], "properties": {}}
 
 
 FakeGPGRet = namedtuple("FakeGPGRet", "ok status stderr")
@@ -116,19 +117,37 @@ class MockPackage:
         ),
     ],
 )
+@mock.patch("archivematica.storage_service.locations.models.Space.move_rsync")
+@mock.patch(
+    "archivematica.storage_service.locations.models.Space.create_local_directory"
+)
+@mock.patch("archivematica.storage_service.locations.models.gpg._gpg_decrypt")
+@mock.patch("archivematica.storage_service.locations.models.gpg._gpg_encrypt")
+@mock.patch(
+    "archivematica.storage_service.locations.models.gpg._encr_path2key_fingerprint",
+    return_value=SOME_FINGERPRINT,
+)
+@mock.patch("archivematica.storage_service.locations.models.gpg._get_encrypted_path")
+@mock.patch("os.path.exists")
 def test_move_to_storage_service(
-    mocker, src_path, dst_path, src_exists1, src_exists2, encr_path, expect
+    exists,
+    _get_encrypted_path,
+    _encr_path2key_fingerprint,
+    _gpg_encrypt,
+    _gpg_decrypt,
+    create_local_directory,
+    move_rsync,
+    src_path,
+    dst_path,
+    src_exists1,
+    src_exists2,
+    encr_path,
+    expect,
 ):
+    exists.side_effect = (src_exists1, src_exists2)
+    _get_encrypted_path.return_value = encr_path
     gpg_space = gpg.GPG(key=SOME_FINGERPRINT, space=space.Space())
-    mocker.patch.object(gpg_space.space, "create_local_directory")
-    mocker.patch.object(gpg_space.space, "move_rsync")
-    mocker.patch.object(gpg, "_gpg_decrypt")
-    mocker.patch.object(gpg, "_gpg_encrypt")
-    mocker.patch.object(
-        gpg, "_encr_path2key_fingerprint", return_value=SOME_FINGERPRINT
-    )
-    mocker.patch.object(gpg, "_get_encrypted_path", return_value=encr_path)
-    mocker.patch.object(os.path, "exists", side_effect=(src_exists1, src_exists2))
+
     if expect == "success":
         ret = gpg_space.move_to_storage_service(src_path, dst_path, None)
         assert ret is None
@@ -137,29 +156,28 @@ def test_move_to_storage_service(
             gpg_space.move_to_storage_service(src_path, dst_path, None)
         if not encr_path:
             assert (
-                "Unable to move {}; this file/dir does not exist;"
-                " nor is it in an encrypted directory.".format(src_path)
-                == str(excinfo.value)
+                f"Unable to move {src_path}; this file/dir does not exist;"
+                " nor is it in an encrypted directory." == str(excinfo.value)
             )
         if not src_exists2:
             assert (
-                "Unable to move {}; this file/dir does not"
+                f"Unable to move {src_path}; this file/dir does not"
                 " exist, not even in encrypted directory"
-                " {}.".format(src_path, encr_path) == str(excinfo.value)
+                f" {encr_path}." == str(excinfo.value)
             )
     if src_exists2 and encr_path:
-        gpg_space.space.move_rsync.assert_called_once_with(src_path, dst_path)
+        move_rsync.assert_called_once_with(src_path, dst_path)
     else:
-        assert not gpg_space.space.move_rsync.called
+        move_rsync.assert_not_called()
     if src_exists1:
-        gpg._gpg_decrypt.assert_called_once_with(dst_path)
-        assert not gpg._gpg_encrypt.called
+        _gpg_decrypt.assert_called_once_with(dst_path)
+        _gpg_encrypt.assert_not_called()
     else:
-        gpg._get_encrypted_path.assert_called_once_with(src_path)
+        _get_encrypted_path.assert_called_once_with(src_path)
         if encr_path:
-            gpg._gpg_encrypt.assert_called_once_with(encr_path, SOME_FINGERPRINT)
-            gpg._gpg_decrypt.assert_called_once_with(encr_path)
-    gpg_space.space.create_local_directory.assert_called_once_with(dst_path)
+            _gpg_encrypt.assert_called_once_with(encr_path, SOME_FINGERPRINT)
+            _gpg_decrypt.assert_called_once_with(encr_path)
+    create_local_directory.assert_called_once_with(dst_path)
 
 
 @pytest.mark.parametrize(
@@ -202,23 +220,39 @@ def test_move_to_storage_service(
         ),
     ],
 )
+@mock.patch("archivematica.storage_service.locations.models.Space.move_rsync")
+@mock.patch(
+    "archivematica.storage_service.locations.models.Space.create_local_directory"
+)
+@mock.patch(
+    "archivematica.storage_service.locations.models.gpg.premis.create_encryption_event"
+)
+@mock.patch("archivematica.storage_service.locations.models.gpg._gpg_encrypt")
+@mock.patch(
+    "archivematica.storage_service.locations.models.gpg._get_gpg_version",
+    return_value=GPG_VERSION,
+)
 def test_move_from_storage_service(
-    mocker, src_path, dst_path, package, encrypt_ret, expect
+    _get_gpg_version,
+    _gpg_encrypt,
+    create_encryption_event,
+    create_local_directory,
+    move_rsync,
+    src_path,
+    dst_path,
+    package,
+    encrypt_ret,
+    expect,
 ):
-    mocker.patch("locations.models.gpg._get_gpg_version", return_value=GPG_VERSION)
     orig_pkg_key = package and package.encryption_key_fingerprint
     if isinstance(encrypt_ret, Exception):
-        mocker.patch.object(gpg, "_gpg_encrypt", side_effect=encrypt_ret)
+        _gpg_encrypt.side_effect = encrypt_ret
     else:
-        mocker.patch.object(gpg, "_gpg_encrypt", return_value=encrypt_ret)
+        _gpg_encrypt.return_value = encrypt_ret
     gpg_space = gpg.GPG(key=SOME_FINGERPRINT, space=space.Space())
-    mocker.patch.object(gpg_space.space, "create_local_directory")
-    mocker.patch.object(gpg_space.space, "move_rsync")
     encryption_event = 42
-    mocker.patch(
-        "locations.models.gpg.premis.create_encryption_event",
-        return_value=encryption_event,
-    )
+    create_encryption_event.return_value = encryption_event
+
     if expect == "success":
         ret = gpg_space.move_from_storage_service(src_path, dst_path, package=package)
         if package.should_have_pointer_file():
@@ -238,15 +272,11 @@ def test_move_from_storage_service(
         else:
             assert str(excinfo.value) == "GPG spaces can only contain packages"
     if package:
-        gpg_space.space.create_local_directory.assert_called_once_with(dst_path)
-        gpg_space.space.move_rsync.assert_any_call(
-            src_path, dst_path, try_mv_local=True
-        )
+        create_local_directory.assert_called_once_with(dst_path)
+        move_rsync.assert_any_call(src_path, dst_path, try_mv_local=True)
         if expect != "success":
-            gpg_space.space.move_rsync.assert_any_call(
-                dst_path, src_path, try_mv_local=True
-            )
-        gpg._gpg_encrypt.assert_called_once_with(dst_path, gpg_space.key)
+            move_rsync.assert_any_call(dst_path, src_path, try_mv_local=True)
+        _gpg_encrypt.assert_called_once_with(dst_path, gpg_space.key)
 
 
 @pytest.mark.parametrize(
@@ -267,30 +297,46 @@ def test_move_from_storage_service(
         BrowseCase(path="/a/b/c/", encrpath="/a/b/c", existsafter=False, expect="fail"),
     ],
 )
-def test_browse(mocker, path, encr_path, exists_after_decrypt, expect):
-    mocker.patch.object(gpg, "_get_encrypted_path", return_value=encr_path)
-    mocker.patch.object(gpg, "_gpg_decrypt")
-    mocker.patch.object(gpg, "_gpg_encrypt")
-    mocker.patch.object(
-        gpg, "_encr_path2key_fingerprint", return_value=SOME_FINGERPRINT
-    )
-    mocker.patch.object(os.path, "exists", return_value=exists_after_decrypt)
-    mocker.patch.object(space, "path2browse_dict", return_value=expect)
+@mock.patch("archivematica.storage_service.locations.models.space.path2browse_dict")
+@mock.patch("os.path.exists")
+@mock.patch(
+    "archivematica.storage_service.locations.models.gpg._encr_path2key_fingerprint",
+    return_value=SOME_FINGERPRINT,
+)
+@mock.patch("archivematica.storage_service.locations.models.gpg._gpg_encrypt")
+@mock.patch("archivematica.storage_service.locations.models.gpg._gpg_decrypt")
+@mock.patch("archivematica.storage_service.locations.models.gpg._get_encrypted_path")
+def test_browse(
+    _get_encrypted_path,
+    _gpg_decrypt,
+    _gpg_encrypt,
+    _encr_path2key_fingerprint,
+    exists,
+    path2browse_dict,
+    path,
+    encr_path,
+    exists_after_decrypt,
+    expect,
+):
+    _get_encrypted_path.return_value = encr_path
+    exists.return_value = exists_after_decrypt
+    path2browse_dict.return_value = expect
+
     fixed_path = path.rstrip("/")
     ret = gpg.GPG().browse(path)
     if expect == "success":
         assert ret == expect
     else:
         assert ret == BROWSE_FAIL_DICT
-    gpg._get_encrypted_path.assert_called_once_with(fixed_path)
+    _get_encrypted_path.assert_called_once_with(fixed_path)
     if encr_path:
-        gpg._gpg_decrypt.assert_called_once_with(encr_path)
-        gpg._encr_path2key_fingerprint.assert_called_once_with(encr_path)
-        gpg._gpg_encrypt.assert_called_once_with(encr_path, SOME_FINGERPRINT)
+        _gpg_decrypt.assert_called_once_with(encr_path)
+        _encr_path2key_fingerprint.assert_called_once_with(encr_path)
+        _gpg_encrypt.assert_called_once_with(encr_path, SOME_FINGERPRINT)
 
 
 @pytest.mark.parametrize(
-    "path, isdir, encr_path_is_file, encrypt_ret, expected",
+    "path, isdir_result, encr_path_is_file, encrypt_ret, expected",
     [
         EncryptCase(
             path="/a/b/c",
@@ -322,35 +368,49 @@ def test_browse(mocker, path, encr_path, exists_after_decrypt, expect):
         ),
     ],
 )
-def test__gpg_encrypt(mocker, path, isdir, encr_path_is_file, encrypt_ret, expected):
+@mock.patch("os.path.isdir")
+@mock.patch("os.remove")
+@mock.patch("os.rename")
+@mock.patch("archivematica.storage_service.common.utils.create_tar")
+@mock.patch("archivematica.storage_service.common.utils.extract_tar")
+@mock.patch("archivematica.storage_service.common.gpgutils.gpg_encrypt_file")
+@mock.patch("os.path.isfile")
+def test__gpg_encrypt(
+    isfile,
+    gpg_encrypt_file,
+    extract_tar,
+    create_tar,
+    rename,
+    remove,
+    isdir,
+    path,
+    isdir_result,
+    encr_path_is_file,
+    encrypt_ret,
+    expected,
+):
     encr_path = f"{path}.gpg"
-    mocker.patch.object(os.path, "isdir", return_value=isdir)
-    mocker.patch.object(os, "remove")
-    mocker.patch.object(os, "rename")
-    mocker.patch.object(utils, "create_tar")
-    mocker.patch.object(utils, "extract_tar")
-    mocker.patch.object(
-        gpgutils, "gpg_encrypt_file", return_value=(encr_path, encrypt_ret)
-    )
-    mocker.patch.object(os.path, "isfile", return_value=encr_path_is_file)
+    isfile.return_value = encr_path_is_file
+    gpg_encrypt_file.return_value = (encr_path, encrypt_ret)
+    isdir.return_value = isdir_result
     if expected == "success":
         ret = gpg._gpg_encrypt(path, SOME_FINGERPRINT)
-        os.remove.assert_called_once_with(path)
-        os.rename.assert_called_once_with(encr_path, path)
+        remove.assert_called_once_with(path)
+        rename.assert_called_once_with(encr_path, path)
         assert ret == (path, encrypt_ret)
-        assert not utils.extract_tar.called
+        extract_tar.assert_not_called()
     else:
         with pytest.raises(gpg.GPGException) as excinfo:
             gpg._gpg_encrypt(path, SOME_FINGERPRINT)
         assert f"An error occured when attempting to encrypt {path}" == str(
             excinfo.value
         )
-        if isdir:
-            utils.extract_tar.assert_called_once_with(path)
-    os.path.isdir.assert_called_once_with(path)
-    os.path.isfile.assert_called_once_with(encr_path)
-    if isdir:
-        utils.create_tar.assert_called_once_with(path)
+        if isdir_result:
+            extract_tar.assert_called_once_with(path)
+    isdir.assert_called_once_with(path)
+    isfile.assert_called_once_with(encr_path)
+    if isdir_result:
+        create_tar.assert_called_once_with(path)
 
 
 def test__get_encrypted_path(monkeypatch):
@@ -366,7 +426,7 @@ def test__get_encrypted_path(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "path, isfile, will_create_decrypt_file, decrypt_ret, expected",
+    "path, isfile_result, will_create_decrypt_file, decrypt_ret, expected",
     [
         DecryptCase(
             path="/a/b/c",
@@ -391,47 +451,60 @@ def test__get_encrypted_path(monkeypatch):
         ),
     ],
 )
+@mock.patch("os.remove")
+@mock.patch("os.rename")
+@mock.patch("tarfile.is_tarfile", return_value=True)
+@mock.patch("archivematica.storage_service.common.gpgutils.gpg_decrypt_file")
+@mock.patch("archivematica.storage_service.common.utils.extract_tar")
+@mock.patch("os.path.isfile")
 def test__gpg_decrypt(
-    mocker, path, isfile, will_create_decrypt_file, decrypt_ret, expected
+    isfile,
+    extract_tar,
+    gpg_decrypt_file,
+    is_tarfile,
+    rename,
+    remove,
+    path,
+    isfile_result,
+    will_create_decrypt_file,
+    decrypt_ret,
+    expected,
 ):
-    mocker.patch("os.remove")
-    mocker.patch("os.rename")
-    mocker.patch.object(tarfile, "is_tarfile", return_value=True)
-    mocker.patch.object(gpgutils, "gpg_decrypt_file", return_value=decrypt_ret)
-    mocker.patch.object(utils, "extract_tar")
-
     def isfilemock(path_):
         if path_ == path:
-            return isfile
+            return isfile_result
         return will_create_decrypt_file
 
-    mocker.patch.object(os.path, "isfile", side_effect=isfilemock)
-    assert not gpgutils.gpg_decrypt_file.called
+    isfile.side_effect = isfilemock
+    gpg_decrypt_file.return_value = decrypt_ret
+
+    gpg_decrypt_file.assert_not_called()
     decr_path = f"{path}.decrypted"
     if expected == "success":
         ret = gpg._gpg_decrypt(path)
-        os.remove.assert_called_once_with(path)
-        os.rename.assert_called_once_with(decr_path, path)
-        tarfile.is_tarfile.assert_called_once_with(path)
-        utils.extract_tar.assert_called_once_with(path)
+        remove.assert_called_once_with(path)
+        rename.assert_called_once_with(decr_path, path)
+        is_tarfile.assert_called_once_with(path)
+        extract_tar.assert_called_once_with(path)
         assert ret == path
     else:
         with pytest.raises(gpg.GPGException) as excinfo:
             gpg._gpg_decrypt(path)
-        if isfile:
-            assert "Failed to decrypt {}. Reason: {}".format(
-                path, DECRYPT_RET_FAIL_STATUS
-            ) == str(excinfo.value)
+        if isfile_result:
+            assert (
+                f"Failed to decrypt {path}. Reason: {DECRYPT_RET_FAIL_STATUS}"
+                == str(excinfo.value)
+            )
         else:
             assert f"Cannot decrypt file at {path}; no such file." == str(excinfo.value)
-        assert not os.remove.called
-        assert not os.rename.called
-        assert not tarfile.is_tarfile.called
-        assert not utils.extract_tar.called
-    if isfile:
-        gpgutils.gpg_decrypt_file.assert_called_once_with(path, decr_path)
+        remove.assert_not_called()
+        rename.assert_not_called()
+        is_tarfile.assert_not_called()
+        extract_tar.assert_not_called()
+    if isfile_result:
+        gpg_decrypt_file.assert_called_once_with(path, decr_path)
     else:
-        assert not gpgutils.gpg_decrypt_file.called
+        gpg_decrypt_file.assert_not_called()
 
 
 def test__parse_gpg_version():
@@ -445,8 +518,7 @@ class TestGPG(TestCase):
     def test__encr_path2key_fingerprint(self):
         package = Package.objects.get(pk=8)
         exp_curr_path = (
-            "some/relative/path/to/"
-            "images-transfer-abcdabcd-97dd-48e0-8417-03be78359531"
+            "some/relative/path/to/images-transfer-abcdabcd-97dd-48e0-8417-03be78359531"
         )
         assert package.current_path == exp_curr_path
         assert package.encryption_key_fingerprint == EXP_FINGERPRINT
@@ -466,6 +538,6 @@ class TestGPG(TestCase):
         with pytest.raises(gpg.GPGException) as excinfo:
             encr_path = "/some/non/matching/path.jpg"
             gpg._encr_path2key_fingerprint(encr_path)
-        assert "Unable to find package matching encrypted path {}".format(
-            encr_path
-        ) in str(excinfo.value)
+        assert f"Unable to find package matching encrypted path {encr_path}" in str(
+            excinfo.value
+        )

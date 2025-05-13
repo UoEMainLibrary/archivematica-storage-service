@@ -1,6 +1,7 @@
-from common.startup import startup
 from django.test import TestCase
-from locations import models
+
+from archivematica.storage_service.common.startup import startup
+from archivematica.storage_service.locations import models
 
 
 class TestStartup(TestCase):
@@ -21,7 +22,7 @@ class TestStartup(TestCase):
         assert not models.Space.objects.all().exists()
         assert not models.Location.objects.all().exists()
         # Run test
-        self.startup()
+        self.startup(start_async=False)
         # Assert Space & Locations created
         assert models.Space.objects.get(access_protocol="FS")
         assert models.Location.objects.get(purpose="TS")
@@ -40,7 +41,7 @@ class TestStartup(TestCase):
         models.Space.objects.create(path="/", access_protocol="FS")
         assert len(models.Space.objects.filter(access_protocol="FS")) == 2
         # Run test
-        self.startup()
+        self.startup(start_async=False)
         # Verify no locations exist - space errored gracefully
         assert len(models.Space.objects.filter(access_protocol="FS")) == 2
         assert not models.Location.objects.all().exists()
@@ -63,7 +64,7 @@ class TestStartup(TestCase):
         assert len(models.Space.objects.filter(access_protocol="FS")) == 1
         assert len(models.Location.objects.filter(purpose="SS")) == 2
         # Run test
-        self.startup()
+        self.startup(start_async=False)
         # Verify no new Location was created
         assert len(models.Space.objects.filter(access_protocol="FS")) == 1
         assert len(models.Location.objects.filter(purpose="SS")) == 2
@@ -87,6 +88,6 @@ class TestStartup(TestCase):
         )
         assert len(models.Location.objects.all()) == 6
         # Run test
-        self.startup()
+        self.startup(start_async=False)
         # Verify no new Locations created
         assert len(models.Location.objects.all()) == 6

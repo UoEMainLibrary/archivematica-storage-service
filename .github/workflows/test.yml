@@ -1,6 +1,13 @@
 ---
 name: "Test"
 on:
+  workflow_dispatch:
+    inputs:
+      ss_version:
+        description: "Archivematica Storage Service ref (branch, tag or SHA to checkout)"
+        default: "qa/0.x"
+        required: true
+        type: "string"
   pull_request:
   push:
     branches:
@@ -9,15 +16,15 @@ on:
 jobs:
   integration:
     name: "Integration ${{ matrix.ubuntu-version }} with ${{ matrix.python-version }}"
-    runs-on: "ubuntu-22.04"
+    runs-on: "ubuntu-24.04"
     strategy:
       fail-fast: false
       matrix:
         ubuntu-version: [
           "22.04",
+          "24.04",
         ]
         python-version: [
-          "3.8",
           "3.9",
           "3.10",
           "3.11",
@@ -25,7 +32,13 @@ jobs:
         ]
     steps:
       - name: "Check out repository"
+        if: "${{ github.event_name != 'workflow_dispatch' }}"
         uses: "actions/checkout@v4"
+      - name: "Check out repository (manually triggered)"
+        if: "${{ github.event_name == 'workflow_dispatch' }}"
+        uses: "actions/checkout@v4"
+        with:
+          ref: "${{ inputs.ss_version || 'qa/0.x' }}"
       - name: "Save user id"
         id: user_id
         run: |
@@ -36,20 +49,20 @@ jobs:
           echo "group_id=$(id -g)" >> $GITHUB_OUTPUT
       - name: "Set up buildx"
         uses: "docker/setup-buildx-action@v3"
-      - name: "Build the archivematica-storage-service image"
-        uses: "docker/build-push-action@v5"
+      - name: "Build the archivematica-storage-service-tests image"
+        uses: "docker/build-push-action@v6"
         with:
-          target: "archivematica-storage-service"
+          target: "archivematica-storage-service-tests"
           build-args: |
             USER_ID=${{ steps.user_id.outputs.user_id }}
             GROUP_ID=${{ steps.group_id.outputs.group_id }}
             UBUNTU_VERSION=${{ matrix.ubuntu-version }}
             PYTHON_VERSION=${{ matrix.python-version }}
-          tags: "archivematica-storage-service:latest"
+          tags: "archivematica-storage-service-tests:latest"
           push: false
           load: true
-          cache-from: "type=gha,scope=archivematica-storage-service-${{ matrix.ubuntu-version }}-${{ matrix.python-version }}"
-          cache-to: "type=gha,scope=archivematica-storage-service-${{ matrix.ubuntu-version }}-${{ matrix.python-version }},mode=max"
+          cache-from: "type=gha,scope=archivematica-storage-service-tests-${{ matrix.ubuntu-version }}-${{ matrix.python-version }}"
+          cache-to: "type=gha,scope=archivematica-storage-service-tests-${{ matrix.ubuntu-version }}-${{ matrix.python-version }},mode=max"
       - name: "Run tests"
         run: |
           ./run.sh
@@ -62,7 +75,7 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python-version }}
           COMPOSE_DOCKER_CLI_BUILD: 1
           DOCKER_BUILDKIT: 1
-          PYTEST_ADDOPTS: -vv --cov storage_service --cov-config=.coveragerc --cov-report xml:coverage.xml
+          PYTEST_ADDOPTS: -vv --cov --cov-config=pyproject.toml --cov-report xml:coverage.xml
       - name: "Upload coverage report"
         if: github.repository == 'artefactual/archivematica-storage-service'
         uses: "codecov/codecov-action@v4"
@@ -74,7 +87,7 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
   tox:
     name: "Tox ${{ matrix.toxenv }}"
-    runs-on: "ubuntu-22.04"
+    runs-on: "ubuntu-24.04"
     strategy:
       fail-fast: false
       matrix:
@@ -84,7 +97,13 @@ jobs:
         ]
     steps:
       - name: "Check out repository"
+        if: "${{ github.event_name != 'workflow_dispatch' }}"
         uses: "actions/checkout@v4"
+      - name: "Check out repository (manually triggered)"
+        if: "${{ github.event_name == 'workflow_dispatch' }}"
+        uses: "actions/checkout@v4"
+        with:
+          ref: "${{ inputs.ss_version || 'qa/0.x' }}"
       - name: "Set up Python 3.9"
         uses: "actions/setup-python@v5"
         with:
@@ -92,6 +111,11 @@ jobs:
           cache: "pip"
           cache-dependency-path: |
             requirements-dev.txt
+      - name: "Install OS packages"
+        run: |
+          sudo apt-get --quiet update
+          sudo apt-get install --quiet --yes build-essential \
+            libmysqlclient-dev libsasl2-dev libldap2-dev libssl-dev
       - name: "Install tox"
         run: |
           python -m pip install --upgrade pip

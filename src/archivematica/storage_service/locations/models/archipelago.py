@@ -289,7 +289,6 @@ class Archipelago(models.Model):
 
                 # Remove the extracted METS file to clean up
                 os.remove(mets_path)
-<<<<<<< HEAD:storage_service/locations/models/archipelago.py
 
                 # Check if the metadata.json exists at the expected location
                 if not os.path.exists(metadata_path):
@@ -301,13 +300,6 @@ class Archipelago(models.Model):
 
             except subprocess.CalledProcessError as err:
                 raise Exception(f"Could not extract files from {input_path}: {err}.")
-=======
-                return mets_el
-            except subprocess.CalledProcessError as err:
-                raise Exception(
-                    f"Could not extract {mets_path} from {input_path}: {err}."
-                )
->>>>>>> qa/0.x:src/archivematica/storage_service/locations/models/archipelago.py
 
     def _get_metadata(self, input_path, aip_uuid, package_type):
         """Extracts METS.xml from AIP"""

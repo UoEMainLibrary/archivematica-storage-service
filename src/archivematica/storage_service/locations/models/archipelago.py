@@ -45,6 +45,26 @@ class Archipelago(models.Model):
 
     ALLOWED_LOCATION_PURPOSE = [Location.AIP_STORAGE]
 
+    def read_metadata_json(self, input_path):
+        """Reads metadata.json file from the transfer location."""
+        metadata_json_path = os.path.join(os.path.dirname(input_path), "metadata.json")
+        if not os.path.exists(metadata_json_path):
+            LOGGER.info("No metadata.json file found.")
+            return {}
+
+        try:
+            with open(metadata_json_path) as metadata_file:
+                metadata = json.load(metadata_file)
+                LOGGER.info("Metadata.json content: %s", metadata)
+                os.remove(metadata_json_path)
+                LOGGER.info("metadata.json file deleted.")
+
+                # Always return the first element of the list
+                return metadata[0]
+        except Exception as e:
+            LOGGER.error("Error reading metadata.json: %s", str(e))
+            return {}
+
     def _upload_file(self, filename, source_path):
         """Uploads zip file to Archipelago before creating new entity
         so if upload fails, new entity not created"""
@@ -79,6 +99,38 @@ class Archipelago(models.Model):
         except (OSError, requests.exceptions.RequestException) as e:
             LOGGER.error("Error during AIP upload to archipelago %s", str(e))
 
+    def _upload_tsm(self, title, source_path):
+        command = [
+            "rsync",
+            "-z",
+            source_path,
+            "lacddt@dp-tsm-staging.is.ed.ac.uk:~/staging/",
+        ]
+        LOGGER.info(command)
+        LOGGER.info("about to upload to TSM")
+        try:
+            out = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ).communicate()
+            LOGGER.info(out)
+            command = [
+                'ssh lacddt@dp-tsm-staging.is.ed.ac.uk "echo {} > ~/staging/{}.done"'.format(
+                    title, source_path.split("/")[-1][:-3]
+                )
+            ]
+            out = subprocess.Popen(
+                command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ).communicate()
+            LOGGER.info(out)
+        except OSError as err:
+            raise Exception(f"Could not run {command[0]}: {err}.")
+        except subprocess.CalledProcessError as err:
+            raise Exception(
+                "Could not archive {} using {}: {}.".format(
+                    source_path, command[0], err
+                )
+            )
+
     def extract_title_from_mets_xml(self, xml_string):
         """Retrieves title from METs file or creates title from file name"""
         try:
@@ -94,7 +146,34 @@ class Archipelago(models.Model):
             LOGGER.error("Error extracting title from METS XML: %s", str(e))
         return None
 
-    def get_dc_metadata(self, xml_string):
+    def merge_dc_metadata(self, dc_fields, metadata_json):
+        """Merge dc fields from METS XML and metadata.json."""
+        for key, value in metadata_json.items():
+            if key.startswith("dc."):
+                # Convert 'dc.title' to 'field_title'
+                field_name = "field_" + key.split(".")[1]
+                dc_fields[field_name] = value
+
+        # Handle the collection field for ismemberof
+        if "dc.collection_nid" in metadata_json:
+            dc_fields["ismemberof"] = metadata_json["dc.collection_nid"]
+
+        # Adding the entity mapping to the strawberry
+        dc_fields["ap:entitymapping"] = {
+            "entity:file": [
+                "model",
+                "audios",
+                "images",
+                "videos",
+                "documents",
+                "upload_associated_warcs",
+            ],
+            "entity:node": ["ispartof", "ismemberof"],
+        }
+
+        return dc_fields
+
+    def get_dc_metadata(self, xml_string, input_path, metadata_json_path):
         """Extracts Dublin Core metadata from METS file"""
         try:
             root = etree.fromstring(xml_string)
@@ -110,8 +189,60 @@ class Archipelago(models.Model):
                     f"dc value added which is {field_value} where the field is {appended_field}"
                 )
                 dc_fields[appended_field] = field_value
-            strawberry = json.dumps(dc_fields)
-            LOGGER.info(f"strawberry json is {strawberry}")
+            output_dir = os.path.dirname(input_path) + "/extracted/"
+            os.makedirs(output_dir, exist_ok=True)
+            metadata_json = self.read_metadata_json(metadata_json_path)
+            if metadata_json is None:
+                strawberry = json.dumps(dc_fields)
+            else:
+                dc_fields = self.merge_dc_metadata(dc_fields, metadata_json)
+                strawberry = json.dumps(dc_fields)
+
+                LOGGER.info(f"Merged complete strawberry json is {strawberry}")
+
+            # Write the merged metadata back into the XML (updating DC fields)
+            for key, value in dc_fields.items():
+                if isinstance(value, list):
+                    value = ", ".join(value)
+                if key.startswith("field_"):
+                    field_name = key.split("field_")[-1]
+                    field_tag = f"{{{namespaces['dc']}}}{field_name}"
+                    elements = root.findall(
+                        f".//dc:{field_name}", namespaces=namespaces
+                    )
+                    LOGGER.info(f"Found {len(elements)} elements for {field_name}")
+                    element = elements[0] if elements else None
+                    if element is None:
+                        metadata_section = root.find(
+                            ".//mets:dmdSec/mets:mdWrap/mets:xmlData",
+                            namespaces=namespaces,
+                        )
+                        if metadata_section is not None:
+                            element = etree.Element(field_tag)
+                            metadata_section.append(element)
+
+                    if element is not None:
+                        element.text = value
+                        LOGGER.info(f"Updated {field_name} with value: {value}")
+
+            updated_xml = etree.tostring(
+                root, pretty_print=True, encoding="utf-8"
+            ).decode("utf-8")
+            with open(input_path, "w", encoding="utf-8") as file:
+                file.write(updated_xml)
+            LOGGER.info(f"Updated METS file saved at {input_path}")
+
+            LOGGER.info(f"Merged complete strawberry json is {strawberry}")
+            try:
+                subprocess.Popen(
+                    ["rm", "-rf", output_dir],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except Exception as cleanup_error:
+                LOGGER.warning(
+                    "Failed to clean up extracted files: %s", str(cleanup_error)
+                )
             return strawberry
 
         except Exception as e:
@@ -119,15 +250,24 @@ class Archipelago(models.Model):
         return None
 
     @staticmethod
-    def _get_mets_el(package_type, output_dir, input_path, dirname, aip_uuid):
-        """Locate, extract (if necessary), XML-parse and return the METS file
+    def _get_files(package_type, output_dir, input_path, dirname, aip_uuid):
+        """Locate, extract (if necessary), and return the METS XML element and metadata.json file path
         for this package.
         """
         if package_type == "AIP":
+            # Define paths for METS file and metadata.json
             relative_mets_path = os.path.join(
                 dirname, "data", "METS." + str(aip_uuid) + ".xml"
             )
+            relative_metadata_path = os.path.join(
+                dirname, "data", "objects", "metadata.json"
+            )
+
+            # Define full paths for extraction
             mets_path = os.path.join(output_dir, relative_mets_path)
+            metadata_path = os.path.join(output_dir, relative_metadata_path)
+
+            # Extraction command
             command = [
                 "unar",
                 "-force-overwrite",
@@ -135,30 +275,51 @@ class Archipelago(models.Model):
                 output_dir,
                 input_path,
                 relative_mets_path,
+                relative_metadata_path,
             ]
+
             try:
+                # Run the extraction process
                 subprocess.Popen(
                     command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                 ).communicate()
+
+                # Parse the METS XML
                 mets_el = etree.parse(mets_path)
+
+                # Remove the extracted METS file to clean up
                 os.remove(mets_path)
+<<<<<<< HEAD:storage_service/locations/models/archipelago.py
+
+                # Check if the metadata.json exists at the expected location
+                if not os.path.exists(metadata_path):
+                    raise FileNotFoundError(
+                        f"metadata.json not found at expected location: {metadata_path}"
+                    )
+
+                return mets_el, metadata_path
+
+            except subprocess.CalledProcessError as err:
+                raise Exception(f"Could not extract files from {input_path}: {err}.")
+=======
                 return mets_el
             except subprocess.CalledProcessError as err:
                 raise Exception(
                     f"Could not extract {mets_path} from {input_path}: {err}."
                 )
+>>>>>>> qa/0.x:src/archivematica/storage_service/locations/models/archipelago.py
 
     def _get_metadata(self, input_path, aip_uuid, package_type):
         """Extracts METS.xml from AIP"""
         output_dir = os.path.dirname(input_path) + "/"
         dirname = os.path.splitext(os.path.basename(input_path))[0]
-        mets_el = self._get_mets_el(
+        mets_el, metadata_json_path = self._get_files(
             package_type, output_dir, input_path, dirname, aip_uuid
         )
         if mets_el is None:
             LOGGER.error("Failed to get METS element")
             return None
-        return etree.tostring(mets_el)
+        return etree.tostring(mets_el), metadata_json_path
 
     def _upload_metadata(self, fid, strawberry, title):
         """POSTs metadata via JSON API to create new entity on archipelago containing the file
@@ -218,8 +379,11 @@ class Archipelago(models.Model):
             destination_path,
             package,
         )
+        LOGGER.info(f"source path is {source_path}")
         field_uuid = package.uuid
-        mets_xml = self._get_metadata(source_path, field_uuid, package_type="AIP")
+        mets_xml, metadata_json_path = self._get_metadata(
+            source_path, field_uuid, package_type="AIP"
+        )
         title = self.extract_title_from_mets_xml(mets_xml)
         filename = os.path.basename(source_path)
         if title is None:  # use transfer name if title was not defined in metadata.
@@ -228,15 +392,22 @@ class Archipelago(models.Model):
                 title = "Default title for Archipelago AIP"
             else:
                 title = parts[0]  # splitting title from uuid
+        LOGGER.info(f"field uuid is {field_uuid}")
         try:
             fid = self._upload_file(filename, source_path)
             LOGGER.info(f"fid found to be {fid}")
+            LOGGER.info("NOW UPLOADING TO TSM")
+            self._upload_tsm(title, source_path)
+            LOGGER.info(f"SOURCE PATH IS found to be {source_path}")
+            LOGGER.info(f"DESTINATION PATH found to be {destination_path}")
             strawberry = self.get_dc_metadata(
-                mets_xml
+                mets_xml, source_path, metadata_json_path
             )  # getting other dublic core metadata fields
             if strawberry is not None:
                 try:
-                    self._upload_metadata(fid, strawberry, title)
+                    strawberry_dict = json.loads(strawberry)
+                    strawberry_dict["aip_uuid"] = str(field_uuid)
+                    self._upload_metadata(fid, json.dumps(strawberry_dict), title)
                 except Exception as e:
                     LOGGER.error(
                         "could not upload metadata (make aip entity to archipelago): %s",

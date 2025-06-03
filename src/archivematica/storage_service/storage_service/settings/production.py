@@ -79,5 +79,4 @@ CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"
 # Note: This key should only be used for development and testing.
 SECRET_KEY = get_env_variable("DJANGO_SECRET_KEY")
 # ######## END SECRET CONFIGURATION
-CSRF_TRUSTED_ORIGINS = ["https://dp-storageservice.is.ed.ac.uk"]
-
+CSRF_TRUSTED_ORIGINS = ["https://test.dp-storageservice.is.ed.ac.uk"]

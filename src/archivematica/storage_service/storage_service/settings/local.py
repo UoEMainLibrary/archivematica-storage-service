@@ -1,6 +1,7 @@
 """Development settings and globals."""
 
 from os import environ
+
 import dj_database_url
 
 from archivematica.storage_service.common.helpers import get_env_variable
@@ -69,6 +70,4 @@ if LDAP_AUTHENTICATION and DEBUG:
     # Don't validate certs if debug is on
     AUTH_LDAP_GLOBAL_OPTIONS[ldap.OPT_X_TLS_REQUIRE_CERT] = ldap.OPT_X_TLS_NEVER
 ######### END LDAP CONFIGURATION #########
-CSRF_TRUSTED_ORIGINS = ["https://dp-storageservice.is.ed.ac.uk"]
-
-
+CSRF_TRUSTED_ORIGINS = ["https://test.dp-storageservice.is.ed.ac.uk"]
